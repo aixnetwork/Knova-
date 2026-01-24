@@ -1,0 +1,28 @@
+
+{
+  "name": "knovatwin-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "type-check": "tsc",
+    "preview": "vite preview",
+    "start": "vite build && vite preview --host 0.0.0.0 --port 8080"
+  },
+  "dependencies": {
+    "@google/genai": "^0.2.1",
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "recharts": "^2.12.2",
+    "d3": "^7.9.0",
+    "@types/react": "^18.2.64",
+    "@types/react-dom": "^18.2.21",
+    "@types/d3": "^7.4.3",
+    "@vitejs/plugin-react": "^4.2.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.6"
+  }
+}

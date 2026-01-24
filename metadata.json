@@ -1,0 +1,7 @@
+{
+  "name": "KnovaTwin - AI Knowledge System",
+  "description": "The AI-Powered System that Closes the Skill Gap with Digital Expert Twinning.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
