@@ -1,7 +1,7 @@
-
 import React, { useState } from 'react';
 import { Bug, Lightbulb, MousePointer, X, Send, CheckCircle, MessageSquare } from 'lucide-react';
 import { AppView } from '../types';
+import { feedbackApi } from '../services/api';
 
 interface BetaFeedbackHubProps {
     currentView: AppView;
@@ -9,23 +9,41 @@ interface BetaFeedbackHubProps {
     onClose: () => void;
 }
 
+const categoryToType: Record<string, string> = { UX: 'IMPROVEMENT', BUG: 'BUG', IDEA: 'IMPROVEMENT' };
+
 export const BetaFeedbackHub: React.FC<BetaFeedbackHubProps> = ({ currentView, isOpen, onClose }) => {
     const [category, setCategory] = useState<'UX' | 'BUG' | 'IDEA'>('UX');
     const [text, setText] = useState('');
     const [submitted, setSubmitted] = useState(false);
+    const [sending, setSending] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     if (!isOpen) return null;
 
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        setSubmitted(true);
-        // Simulate logging to a telemetry service
-        console.log(`[BETA_UX_LOG]: View: ${currentView} | Cat: ${category} | Msg: ${text}`);
-        setTimeout(() => {
-            setSubmitted(false);
-            setText('');
-            onClose();
-        }, 2000);
+        if (!text.trim()) return;
+        setSending(true);
+        setError(null);
+        try {
+            await feedbackApi.create({
+                type: categoryToType[category] || 'IMPROVEMENT',
+                message: `[${currentView}] ${category}: ${text.trim()}`,
+                userName: 'Beta User',
+                userEmail: 'beta@knovatwin.com',
+            });
+            setSubmitted(true);
+            setTimeout(() => {
+                setSubmitted(false);
+                setText('');
+                onClose();
+            }, 2000);
+        } catch (err: unknown) {
+            const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: string }).message) : 'Failed to send.';
+            setError(msg);
+        } finally {
+            setSending(false);
+        }
     };
 
     return (
@@ -79,9 +97,9 @@ export const BetaFeedbackHub: React.FC<BetaFeedbackHubProps> = ({ currentView, i
                                 required
                             />
                         </div>
-
-                        <button type="submit" className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-all flex items-center justify-center gap-2 shadow-lg">
-                            <Send size={16} /> Submit Feedback
+                        {error && <p className="text-red-600 text-xs">{error}</p>}
+                        <button type="submit" disabled={sending} className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 disabled:opacity-60 transition-all flex items-center justify-center gap-2 shadow-lg">
+                            <Send size={16} /> {sending ? 'Sending…' : 'Submit Feedback'}
                         </button>
                     </form>
                 )}

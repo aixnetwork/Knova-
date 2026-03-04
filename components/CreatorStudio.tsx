@@ -352,7 +352,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
         };
         if (!currentCourseId) setCurrentCourseId(idToUse);
         onPublishCourse(newCourse);
-        setWizardMode('MARKETING');
+        onNavigateToDashboard();
     };
 
     return (
@@ -374,6 +374,63 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                 </div>
             </div>
 
+            {wizardMode === 'OUTLINE' && (
+                <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-200 max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4">
+                    <h2 className="text-xl font-bold mb-6 text-slate-900">Course outline</h2>
+                    <div className="space-y-6">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Course title</label>
+                            <input
+                                type="text"
+                                value={title}
+                                onChange={(e) => setTitle(e.target.value)}
+                                placeholder="Course title"
+                                className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">Description</label>
+                            <textarea
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                placeholder="Course description"
+                                rows={4}
+                                className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 outline-none resize-y"
+                            />
+                        </div>
+                        <div>
+                            <h3 className="text-sm font-semibold text-slate-700 mb-3">Modules ({generatedModules.length})</h3>
+                            <ul className="space-y-4">
+                                {generatedModules.map((mod, i) => (
+                                    <li key={mod.id || i} className="p-4 border border-slate-200 rounded-xl bg-slate-50/50">
+                                        <div className="font-medium text-slate-900">{i + 1}. {mod.title}</div>
+                                        {mod.description && <p className="text-sm text-slate-600 mt-1">{mod.description}</p>}
+                                        {mod.keyConcepts && mod.keyConcepts.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5 mt-2">
+                                                {mod.keyConcepts.map((c, j) => (
+                                                    <span key={j} className="text-xs px-2 py-0.5 bg-purple-100 text-purple-800 rounded-full">{c}</span>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-3 mt-8">
+                        <button onClick={() => setWizardMode('TOPIC')} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium transition-colors">
+                            Back to topic
+                        </button>
+                        <button onClick={handleSaveDraft} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                            <Save size={16} /> Save draft
+                        </button>
+                        <button onClick={handlePublish} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                            Publish course
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {wizardMode === 'TOPIC' && (
                 <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-200 max-w-3xl mx-auto animate-in fade-in slide-in-from-bottom-4">
                     <h2 className="text-xl font-bold mb-6">What do you want to teach?</h2>
@@ -383,9 +440,16 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                         onChange={(e) => setTopic(e.target.value)}
                         placeholder="e.g. Advanced React Patterns, Crisis Leadership..."
                         className="w-full p-4 border border-slate-300 rounded-xl text-lg mb-6 focus:ring-2 focus:ring-purple-500 outline-none"
+                        disabled={isGenerating}
                     />
+                    {isGenerating && (
+                        <div className="flex items-center gap-3 p-4 mb-6 rounded-xl bg-purple-50 border border-purple-100 text-purple-800">
+                            <Loader2 className="animate-spin flex-shrink-0" size={24} />
+                            <span>Generating course outline…</span>
+                        </div>
+                    )}
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                        <button onClick={handleGenerateOutline} disabled={!topic || isGenerating} className="p-4 border-2 border-slate-100 hover:border-purple-500 rounded-xl flex flex-col items-center gap-3 group transition-all bg-white">
+                        <button onClick={handleGenerateOutline} disabled={!topic || isGenerating} className="p-4 border-2 border-slate-100 hover:border-purple-500 rounded-xl flex flex-col items-center gap-3 group transition-all bg-white disabled:opacity-60">
                             <div className="bg-purple-50 p-3 rounded-full group-hover:bg-purple-100 transition-colors"><Layers size={24} className="text-purple-600"/></div>
                             <div className="text-center"><span className="font-bold text-slate-700 block text-sm">Full Course</span><span className="text-[10px] text-slate-500">Comprehensive Syllabus</span></div>
                         </button>
@@ -525,7 +589,160 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                 </div>
             )}
 
-            {/* Omitted other render modes for brevity, standard Course Builder logic applies */}
+            {wizardMode === 'MICRO' && (
+                <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-200 max-w-3xl mx-auto animate-in fade-in slide-in-from-bottom-4">
+                    <h2 className="text-xl font-bold mb-2 text-slate-900 flex items-center gap-2">
+                        <Zap className="text-amber-500" size={24} /> Micro-Lesson
+                    </h2>
+                    <p className="text-sm text-slate-500 mb-6">3-minute quick hit on: <strong>{topic || 'Your topic'}</strong></p>
+                    {!microLesson ? (
+                        <div className="space-y-4">
+                            <p className="text-slate-600">Generate a short, focused lesson you can use as a stand-alone or add to a course later.</p>
+                            <button
+                                onClick={async () => {
+                                    if (!topic?.trim()) return;
+                                    setIsGenerating(true);
+                                    try {
+                                        const lesson = await generateMicroLesson(topic);
+                                        setMicroLesson({ ...lesson, id: lesson.id || `micro-${Date.now()}`, generatedAt: Date.now() });
+                                    } catch (e) {
+                                        console.error(e);
+                                        alert('Failed to generate micro-lesson. Please try again.');
+                                    } finally {
+                                        setIsGenerating(false);
+                                    }
+                                }}
+                                disabled={!topic?.trim() || isGenerating}
+                                className="px-6 py-3 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white font-bold rounded-xl flex items-center gap-2"
+                            >
+                                {isGenerating ? <Loader2 className="animate-spin" size={20} /> : <Zap size={20} />}
+                                {isGenerating ? 'Generating…' : 'Generate 3-min lesson'}
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="space-y-4 text-left">
+                            <h3 className="text-lg font-bold text-slate-900">{microLesson.title}</h3>
+                            {microLesson.duration && <p className="text-xs text-slate-500">{microLesson.duration}</p>}
+                            <div className="prose prose-slate max-w-none text-slate-700 whitespace-pre-wrap">{microLesson.content}</div>
+                        </div>
+                    )}
+                    <div className="mt-8 flex flex-wrap gap-3">
+                        <button onClick={() => { setMicroLesson(null); setWizardMode('TOPIC'); }} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium">
+                            Back to topic
+                        </button>
+                        {microLesson && (
+                            <button onClick={() => { setMicroLesson(null); setWizardMode('TOPIC'); }} className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium">
+                                Create another
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {wizardMode === 'IMPORT' && (
+                <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-200 max-w-4xl mx-auto animate-in fade-in slide-in-from-bottom-4">
+                    <h2 className="text-xl font-bold mb-2 text-slate-900 flex items-center gap-2">
+                        <FileText className="text-emerald-500" size={24} /> Import Content
+                    </h2>
+                    <p className="text-sm text-slate-500 mb-6">Paste text, upload a file, or add a link. Then generate a course from your sources.</p>
+                    <div className="flex gap-2 mb-4 border-b border-slate-200">
+                        {(['TEXT', 'FILE', 'CLOUD'] as const).map((tab) => (
+                            <button
+                                key={tab}
+                                onClick={() => setActiveImportTab(tab)}
+                                className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${activeImportTab === tab ? 'bg-slate-100 text-slate-900 border-b-2 border-emerald-500 -mb-px' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                {tab === 'TEXT' ? 'Paste text' : tab === 'FILE' ? 'Upload file' : 'Link / Cloud'}
+                            </button>
+                        ))}
+                    </div>
+                    {activeImportTab === 'TEXT' && (
+                        <div className="space-y-3">
+                            <textarea
+                                value={tempText}
+                                onChange={(e) => setTempText(e.target.value)}
+                                placeholder="Paste your content, notes, or document text here..."
+                                rows={6}
+                                className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none resize-y"
+                            />
+                            <button onClick={handleAddTextSource} disabled={!tempText.trim()} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg">
+                                Add to sources
+                            </button>
+                        </div>
+                    )}
+                    {activeImportTab === 'FILE' && (
+                        <div className="space-y-3">
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".txt,.md,.json"
+                                onChange={handleFileUpload}
+                                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-emerald-50 file:text-emerald-700"
+                            />
+                            <p className="text-xs text-slate-500">Supported: .txt, .md, .json. Content will be used as course source.</p>
+                        </div>
+                    )}
+                    {activeImportTab === 'CLOUD' && (
+                        <div className="space-y-3">
+                            <input
+                                type="text"
+                                value={tempLink}
+                                onChange={(e) => setTempLink(e.target.value)}
+                                placeholder="Paste a Google Doc, OneDrive, or web URL..."
+                                className="w-full p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none"
+                            />
+                            <div className="flex gap-2">
+                                <button onClick={() => handleAddLinkSource('LINK')} disabled={!tempLink.trim()} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 text-slate-800 text-sm font-medium rounded-lg">Add as link</button>
+                                <button onClick={() => handleAddLinkSource('DRIVE')} disabled={!tempLink.trim()} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 text-slate-800 text-sm font-medium rounded-lg">Add as Google Doc</button>
+                                <button onClick={() => handleAddLinkSource('ONEDRIVE')} disabled={!tempLink.trim()} className="px-4 py-2 bg-slate-200 hover:bg-slate-300 disabled:opacity-50 text-slate-800 text-sm font-medium rounded-lg">Add as OneDrive</button>
+                            </div>
+                        </div>
+                    )}
+                    {sources.length > 0 && (
+                        <div className="mt-6">
+                            <h3 className="text-sm font-semibold text-slate-700 mb-2">Sources ({sources.length})</h3>
+                            <ul className="space-y-2">
+                                {sources.map((s) => (
+                                    <li key={s.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                                        <span className="text-sm font-medium text-slate-800 truncate">{s.name}</span>
+                                        <button onClick={() => handleRemoveSource(s.id)} className="text-slate-400 hover:text-red-600 p-1" aria-label="Remove"><X size={16} /></button>
+                                    </li>
+                                ))}
+                            </ul>
+                            <button
+                                onClick={async () => {
+                                    const context = sources.map(s => s.content).join('\n\n').substring(0, 50000);
+                                    setIsGenerating(true);
+                                    try {
+                                        const result = await generateCourseSyllabus(topic || 'Imported content', context);
+                                        setTitle(result.title || title);
+                                        setDescription(result.description || description);
+                                        setGeneratedModules(result.modules?.map((m: any, i: number) => ({ ...m, id: `mod-${Date.now()}-${i}`, isCompleted: false })) || []);
+                                        setWizardMode('OUTLINE');
+                                    } catch (e) {
+                                        console.error(e);
+                                        alert('Failed to generate outline from sources.');
+                                    } finally {
+                                        setIsGenerating(false);
+                                    }
+                                }}
+                                disabled={isGenerating}
+                                className="mt-4 px-6 py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl flex items-center gap-2"
+                            >
+                                {isGenerating ? <Loader2 className="animate-spin" size={20} /> : null}
+                                {isGenerating ? 'Generating outline…' : 'Generate course from sources'}
+                            </button>
+                        </div>
+                    )}
+                    <div className="mt-8">
+                        <button onClick={() => setWizardMode('TOPIC')} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-medium">
+                            Back to topic
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* TWIN_LAB and MARKETING render modes can be added here if needed */}
         </div>
     );
 };

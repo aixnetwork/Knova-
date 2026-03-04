@@ -9,6 +9,7 @@ import {
     UserProfile, 
     ExpertPersona, 
     AssessmentQuestion, 
+    AssessmentQuestionType,
     AssessmentResult, 
     ExternalAssessment,
     MarketingAssets,
@@ -25,20 +26,22 @@ let client: GoogleGenAI | null = null;
 
 export const getClient = (): GoogleGenAI => {
     if (!client) {
-        // Robust Key Retrieval: Checks Vite env, Process env, then Local Storage with Safety Checks
         const metaEnv = (import.meta as any)?.env || {};
         const processEnv = typeof process !== 'undefined' ? process.env : {};
-
-        const rawKey = metaEnv.VITE_API_KEY || 
-                       processEnv.API_KEY || 
-                       processEnv.VITE_API_KEY || 
-                       localStorage.getItem('knovatwin_custom_api_key') || 
+        const rawKey = metaEnv.VITE_GEMINI_API_KEY ||
+                       metaEnv.GEMINI_API_KEY ||
+                       processEnv.VITE_GEMINI_API_KEY ||
+                       processEnv.GEMINI_API_KEY ||
+                       metaEnv.VITE_API_KEY ||
+                       processEnv.VITE_API_KEY ||
+                       processEnv.API_KEY ||
+                       (typeof localStorage !== 'undefined' ? localStorage.getItem('knovatwin_custom_api_key') : null) ||
                        '';
-        
-        const apiKey = rawKey.trim();
-                       
+        const apiKey = (rawKey && typeof rawKey === 'string' ? rawKey : '').trim();
         if (!apiKey) {
-            console.warn("API Key not found in environment or local storage");
+            const msg = 'Gemini API key not set. Add GEMINI_API_KEY or VITE_GEMINI_API_KEY to Knova-/.env.local and restart the dev server, or enter your key in Settings.';
+            console.error(msg);
+            throw new Error(msg);
         }
         client = new GoogleGenAI({ apiKey });
     }
@@ -48,16 +51,30 @@ export const getClient = (): GoogleGenAI => {
 export const hasValidKey = (): boolean => {
     const metaEnv = (import.meta as any)?.env || {};
     const processEnv = typeof process !== 'undefined' ? process.env : {};
-    const rawKey = metaEnv.VITE_API_KEY || 
-                   processEnv.API_KEY || 
-                   processEnv.VITE_API_KEY || 
-                   localStorage.getItem('knovatwin_custom_api_key') || 
+    const rawKey = metaEnv.VITE_GEMINI_API_KEY ||
+                   metaEnv.GEMINI_API_KEY ||
+                   processEnv.VITE_GEMINI_API_KEY ||
+                   processEnv.GEMINI_API_KEY ||
+                   metaEnv.VITE_API_KEY ||
+                   processEnv.VITE_API_KEY ||
+                   processEnv.API_KEY ||
+                   localStorage.getItem('knovatwin_custom_api_key') ||
                    '';
     return rawKey.trim().length > 0;
 };
 
 export const resetClient = () => {
     client = null;
+};
+
+// --- Helper: Extract text from SDK response (handles .text or candidates[].content.parts[].text) ---
+const getResponseText = (response: GenerateContentResponse): string => {
+    if (response.text && typeof response.text === 'string') return response.text;
+    const candidates = (response as any).candidates;
+    if (Array.isArray(candidates) && candidates[0]?.content?.parts?.[0]?.text) {
+        return candidates[0].content.parts[0].text;
+    }
+    return '';
 };
 
 // --- Helper: Clean JSON ---
@@ -569,7 +586,8 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
     }
   })) as GenerateContentResponse;
   
-  const data = JSON.parse(cleanJson(response.text || '{}'));
+  const rawText = getResponseText(response);
+  const data = JSON.parse(cleanJson(rawText || '{}'));
   if(data.modules) {
     data.modules = data.modules.map((m: any, i: number) => ({
       ...m,
@@ -717,18 +735,49 @@ export const generateBiceData = async (industry: string, strategy: string) => {
 
 // --- Assessment ---
 
+/** Raw shape returned by Gemini (question_text, type: "multiple_choice" | "open_ended", options, etc.) */
+type GeminiAssessmentItem = {
+    question_text?: string;
+    question?: string;
+    type?: string;
+    options?: string[];
+    correct_answer?: string;
+    suggested_answer_placeholder?: string;
+};
+
 export const generateAssessment = async (course: Course): Promise<AssessmentQuestion[]> => {
     const ai = getClient();
-    const prompt = `Generate a final assessment for the course: ${course.title}.
+    const prompt = `Generate a final assessment for the course: ${course.title || course.topic}.
     Include 3 multiple choice and 2 open ended questions.
-    Return JSON.`;
+    Return a JSON array. Each item must have:
+    - "type": "multiple_choice" or "open_ended"
+    - "question_text": the question string
+    - For multiple_choice: "options" (array of strings), "correct_answer" (string)
+    - For open_ended: "suggested_answer_placeholder" (optional string)
+    Return only the JSON array, no other text.`;
     
     const response = await retryOperation(() => ai.models.generateContent({
         model: COURSE_MODEL,
         contents: prompt,
-        config: { responseMimeType: 'application/json' } 
+        config: { responseMimeType: 'application/json' }
     })) as GenerateContentResponse;
-    return JSON.parse(cleanJson(response.text || '[]'));
+    const rawText = getResponseText(response);
+    const rawList: GeminiAssessmentItem[] = JSON.parse(cleanJson(rawText || '[]'));
+    if (!Array.isArray(rawList)) return [];
+
+    return rawList.map((item, index): AssessmentQuestion => {
+        const questionText = item.question_text || item.question || '';
+        const typeStr = (item.type || '').toLowerCase();
+        const type: AssessmentQuestionType = typeStr === 'open_ended' || typeStr === 'open ended'
+            ? AssessmentQuestionType.OPEN_ENDED
+            : AssessmentQuestionType.MULTIPLE_CHOICE;
+        return {
+            id: `aq-${Date.now()}-${index}`,
+            question: questionText,
+            type,
+            options: Array.isArray(item.options) ? item.options : (type === AssessmentQuestionType.MULTIPLE_CHOICE ? [] : undefined),
+        };
+    });
 };
 
 export const evaluateAssessment = async (course: Course, questions: AssessmentQuestion[], answers: any): Promise<AssessmentResult> => {

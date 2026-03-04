@@ -273,9 +273,10 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, topic, contextCon
         }
       });
 
-    } catch (e) {
+    } catch (e: unknown) {
       console.error("Failed to connect", e);
-      setError("Could not access microphone or API.");
+      const message = e instanceof Error ? e.message : "Could not access microphone or API.";
+      setError(message);
     }
   };
 

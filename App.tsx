@@ -69,6 +69,8 @@ import { CohortProgramView } from './components/CohortProgramView';
 import { ExternalAssessmentView } from './components/ExternalAssessmentView';
 import { FeedbackModal } from './components/FeedbackModal';
 import { TwinManager } from './components/TwinManager';
+import { authApi, clearToken, coursesApi, enrollmentsApi } from './services/api';
+import { mapAuthUserToProfile } from './services/authHelpers';
 
 // --- Performance Hook: Debounce ---
 function useDebounce<T>(value: T, delay: number): T {
@@ -87,8 +89,12 @@ function useDebounce<T>(value: T, delay: number): T {
   return debouncedValue;
 }
 
+// Backend course IDs are UUIDs; only persist non-backend courses to localStorage.
+const isBackendCourseId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
 // --- Persistence Helpers with Quota Safety ---
 const safePersistCourse = (course: Course) => {
+    if (isBackendCourseId(course.id)) return; // Backend courses are stored in DB, not localStorage
     const key = `knovatwin_course_${course.id}`;
     try {
         localStorage.setItem(key, JSON.stringify(course));
@@ -137,7 +143,7 @@ const safePersistCourse = (course: Course) => {
 
 const persistIndexToStorage = (courses: Course[]) => {
     try {
-        const ids = courses.map(c => c.id);
+        const ids = courses.filter(c => !isBackendCourseId(c.id)).map(c => c.id);
         localStorage.setItem('knovatwin_course_index', JSON.stringify(ids));
     } catch (e) {
         console.error("Failed to save index:", e);
@@ -225,23 +231,10 @@ export const App: React.FC = () => {
       }
   }, []);
 
-  const [user, setUser] = useState<UserProfile | null>(() => {
-      try {
-          const savedUser = localStorage.getItem('knovatwin_user_session');
-          if (!savedUser) return null;
-          
-          const parsed = JSON.parse(savedUser);
-          if (!parsed || !parsed.name || !parsed.email) {
-              return null; 
-          }
-          return parsed;
-      } catch (e) {
-          console.error("Failed to restore user session", e);
-          return null;
-      }
-  });
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
 
-  const [view, setView] = useState<AppView>(user ? AppView.DASHBOARD : AppView.LANDING);
+  const [view, setView] = useState<AppView>(AppView.LANDING);
   const [courses, setCourses] = useState<Course[]>([]);
   const debouncedCourses = useDebounce(courses, 2000); 
 
@@ -322,6 +315,26 @@ export const App: React.FC = () => {
     ]
   };
 
+  // Restore session from token (GET /auth/me)
+  useEffect(() => {
+    const token = localStorage.getItem('knovatwin_token');
+    if (!token) {
+      setSessionChecked(true);
+      return;
+    }
+    authApi.me()
+      .then(({ data }) => {
+        setUser(mapAuthUserToProfile(data));
+        setView(AppView.DASHBOARD);
+      })
+      .catch(() => {
+        clearToken();
+        setUser(null);
+        setView(AppView.LANDING);
+      })
+      .finally(() => setSessionChecked(true));
+  }, []);
+
   useEffect(() => {
     const handleStorageWarning = (e: Event) => {
         const detail = (e as CustomEvent).detail;
@@ -357,7 +370,7 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // LOAD COURSES
+  // LOAD COURSES: localStorage first, then merge with API if available
   useEffect(() => {
     const MARKETPLACE_MOCK: Course[] = [
         { 
@@ -393,16 +406,40 @@ export const App: React.FC = () => {
         }
     }
     
-    // Merge Strategy: Keep loaded courses, append mocks if not present
     const loadedMap = new Map(loadedCourses.map(c => [c.id, c]));
-    
     MARKETPLACE_MOCK.forEach(mock => {
         if (!loadedMap.has(mock.id)) {
             loadedCourses.push(mock);
         }
     });
-    
     setCourses(loadedCourses);
+
+    coursesApi.list()
+      .then(({ data }) => {
+        if (!Array.isArray(data)) return;
+        const apiCourses: Course[] = data.map((c: { id: string; topic: string; description: string; status?: string; modules?: { id: string; name: string; description?: string | null; keyConcepts: string[] }[] }) => ({
+          id: c.id,
+          title: c.topic,
+          topic: c.topic,
+          description: c.description || '',
+          progress: 0,
+          createdAt: Date.now(),
+          modules: (c.modules || []).map((m: { id: string; name: string; description?: string | null; keyConcepts: string[] }) => ({
+            id: m.id,
+            title: m.name,
+            description: m.description ?? undefined,
+            keyConcepts: m.keyConcepts || [],
+            isCompleted: false,
+          })),
+          status: c.status === 'PUBLISHED' ? CourseStatus.PUBLISHED : CourseStatus.DRAFT,
+        }));
+        setCourses(prev => {
+          const map = new Map(prev.map(c => [c.id, c]));
+          apiCourses.forEach(ac => { if (!map.has(ac.id)) map.set(ac.id, ac); });
+          return Array.from(map.values());
+        });
+      })
+      .catch(() => {});
   }, []);
 
   // BACKGROUND SAVE (Debounced)
@@ -425,7 +462,8 @@ export const App: React.FC = () => {
 
   useEffect(() => {
       if (user) {
-          const hasEnvKey = !!process.env.API_KEY && process.env.API_KEY.length > 10;
+          const geminiKey = (import.meta as any)?.env?.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' && (process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY)) || '';
+          const hasEnvKey = geminiKey.length > 10;
           const storedKey = localStorage.getItem('knovatwin_custom_api_key');
           if (!hasEnvKey && !storedKey) {
               setShowApiKeyModal(true);
@@ -454,6 +492,7 @@ export const App: React.FC = () => {
 
   const handleLogout = () => {
       setUser(null);
+      clearToken();
       localStorage.removeItem('knovatwin_user_session');
       setView(AppView.LANDING);
   };
@@ -481,52 +520,82 @@ export const App: React.FC = () => {
 
   const addCourse = (course: Course) => {
       if(!course.modules) course.modules = [];
-      if(!course.id || !course.id.startsWith('course-')) {
-          course.id = `course-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-      }
-      
+      const tempId = course.id && course.id.startsWith('course-') ? course.id : `course-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      const status = course.status || (user?.role === UserRole.ADMIN ? CourseStatus.PUBLISHED : CourseStatus.DRAFT);
       const courseWithTimestamp = {
           ...course,
+          id: tempId,
           createdAt: course.createdAt || Date.now(),
-          status: course.status || (user?.role === UserRole.ADMIN ? CourseStatus.PUBLISHED : CourseStatus.DRAFT)
+          status
       };
-      
+
       setCourses(prev => {
-          let newCourses;
           const idx = prev.findIndex(c => c.id === courseWithTimestamp.id);
-          if (idx >= 0) {
-              newCourses = [...prev];
-              newCourses[idx] = courseWithTimestamp;
-          } else {
-              newCourses = [courseWithTimestamp, ...prev];
-          }
-          
-          // IMMEDIATE SAFE PERSISTENCE
+          const newCourses = idx >= 0 ? prev.map(c => c.id === courseWithTimestamp.id ? courseWithTimestamp : c) : [courseWithTimestamp, ...prev];
           safePersistCourse(courseWithTimestamp);
           persistIndexToStorage(newCourses);
-          
           return newCourses;
       });
-      
-      if (courseWithTimestamp.status === CourseStatus.PUBLISHED) {
-          setJustPublishedCourse(courseWithTimestamp);
-      }
+      if (status === CourseStatus.PUBLISHED) setJustPublishedCourse(courseWithTimestamp);
+
+      // Always save to backend (database) for both draft and publish
+      coursesApi.create({
+          topic: courseWithTimestamp.topic || courseWithTimestamp.title || 'Untitled',
+          description: courseWithTimestamp.description || '',
+          modules: (courseWithTimestamp.modules || []).map(m => ({
+              name: m.title,
+              description: m.description ?? undefined,
+              keyConcepts: m.keyConcepts || []
+          })),
+          status: status === CourseStatus.PUBLISHED ? 'PUBLISHED' : 'DRAFT'
+      }).then(({ data }) => {
+          const apiCourse: Course = {
+              id: data.id,
+              title: data.topic,
+              topic: data.topic,
+              description: data.description || '',
+              progress: 0,
+              createdAt: Date.now(),
+              modules: (data.modules || []).map((m: { id: string; name: string; description?: string | null; keyConcepts: string[] }) => ({
+                  id: m.id,
+                  title: m.name,
+                  description: m.description ?? undefined,
+                  keyConcepts: m.keyConcepts || [],
+                  isCompleted: false
+              })),
+              status: (data as { status?: string }).status === 'PUBLISHED' ? CourseStatus.PUBLISHED : CourseStatus.DRAFT
+          };
+          setCourses(prev => {
+              const next = prev.filter(c => c.id !== tempId);
+              const map = new Map(next.map(c => [c.id, c]));
+              map.set(apiCourse.id, apiCourse);
+              try { localStorage.removeItem(`knovatwin_course_${tempId}`); } catch (_) {}
+              persistIndexToStorage(Array.from(map.values()));
+              return Array.from(map.values());
+          });
+          if (status === CourseStatus.PUBLISHED) setJustPublishedCourse(apiCourse);
+      }).catch(() => {
+          // Keep course in state and localStorage if API fails
+      });
       setCourseSearch('');
   };
 
   const handleUpdateCourse = (courseId: string, updates: Partial<Course>) => {
+    const course = courses.find(c => c.id === courseId);
+    if (!course) return;
+    const updatedCourse = { ...course, ...updates };
     setCourses(prev => {
-        const newCourses = prev.map(c => {
-            if (c.id === courseId) {
-                const updated = { ...c, ...updates };
-                // Immediate save for direct updates
-                safePersistCourse(updated);
-                return updated;
-            }
-            return c;
-        });
+        const newCourses = prev.map(c => (c.id === courseId ? updatedCourse : c));
+        safePersistCourse(updatedCourse);
         return newCourses;
     });
+    if (isBackendCourseId(courseId)) {
+        coursesApi.update(courseId, {
+            topic: updatedCourse.topic || updatedCourse.title,
+            description: updatedCourse.description,
+            modules: updatedCourse.modules?.map(m => ({ title: m.title, description: m.description, keyConcepts: m.keyConcepts })),
+        }).catch(() => {});
+    }
   };
 
   const handleEditCourse = (courseId: string) => {
@@ -559,6 +628,15 @@ export const App: React.FC = () => {
     const course = courses.find(c => c.id === courseId);
     if (!course) return;
     setActiveCourseId(courseId);
+    if (isBackendCourseId(courseId)) {
+      enrollmentsApi.enroll(courseId).catch(() => {});
+      enrollmentsApi.getCompletedModules(courseId).then(({ data }) => {
+        const ids = new Set(data.moduleIds || []);
+        if (ids.size > 0) {
+          setCourses(prev => prev.map(c => c.id === courseId ? { ...c, modules: c.modules?.map(m => ({ ...m, isCompleted: ids.has(m.id) })) || [] } : c));
+        }
+      }).catch(() => {});
+    }
     const firstModule = course.modules?.find(m => !m.isCompleted) || course.modules?.[0];
     if (firstModule) {
         handleSelectModule(firstModule.id, courseId);
@@ -669,19 +747,21 @@ export const App: React.FC = () => {
 
   const handleMarkModuleComplete = () => {
     if (!activeCourseId || !activeModuleId) return;
-    setCourses(prev => {
-        const updatedCourses = prev.map(c => {
-          if (c.id === activeCourseId) {
-            const updatedModules = c.modules?.map(m => m.id === activeModuleId ? { ...m, isCompleted: true } : m) || [];
-            const progress = Math.round((updatedModules.filter(m => m.isCompleted).length / Math.max(1, updatedModules.length)) * 100);
-            const updatedCourse = { ...c, modules: updatedModules, progress };
-            safePersistCourse(updatedCourse);
-            return updatedCourse;
-          }
-          return c;
-        });
-        return updatedCourses;
-    });
+    const updateLocalState = (progress?: number) => {
+      setCourses(prev => prev.map(c => {
+        if (c.id !== activeCourseId) return c;
+        const updatedModules = c.modules?.map(m => m.id === activeModuleId ? { ...m, isCompleted: true } : m) || [];
+        const p = progress ?? Math.round((updatedModules.filter(m => m.isCompleted).length / Math.max(1, updatedModules.length)) * 100);
+        const updatedCourse = { ...c, modules: updatedModules, progress: p };
+        safePersistCourse(updatedCourse);
+        return updatedCourse;
+      }));
+    };
+    if (isBackendCourseId(activeCourseId)) {
+      enrollmentsApi.markModuleComplete(activeModuleId).then(({ data }) => updateLocalState(data.progress)).catch(() => updateLocalState());
+    } else {
+      updateLocalState();
+    }
   };
 
   const handleStartQuiz = async () => {

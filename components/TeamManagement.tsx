@@ -1,75 +1,107 @@
-
 import React, { useState, useEffect } from 'react';
-import { Users, UserPlus, Trash2, Crown, GraduationCap, CheckCircle, Search, AlertCircle, X, AlertTriangle, TrendingDown } from 'lucide-react';
+import { Users, UserPlus, Trash2, CheckCircle, Search, Loader2 } from 'lucide-react';
 import { UserRole } from '../types';
+import { teamsApi } from '../services/api';
 
 interface TeamMember {
     id: string;
     name: string;
     email: string;
     role: UserRole;
-    status: 'Active' | 'Pending';
-    lastActive: string;
+    status: string;
+    riskScore: number;
     coursesCompleted: number;
-    riskScore: number; // 0-100
 }
 
-const STORAGE_KEY = 'knovatwin_team_members';
-
-const INITIAL_MEMBERS: TeamMember[] = [];
+interface Team {
+    id: string;
+    name: string;
+    members?: { id: string; user?: { id: string; name: string; email: string }; role: string; status: string }[];
+}
 
 export const TeamManagement: React.FC = () => {
-    const [members, setMembers] = useState<TeamMember[]>(() => {
-        try {
-            const saved = localStorage.getItem(STORAGE_KEY);
-            return saved ? JSON.parse(saved) : INITIAL_MEMBERS;
-        } catch (e) {
-            return INITIAL_MEMBERS;
-        }
-    });
-
+    const [teams, setTeams] = useState<Team[]>([]);
+    const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [inviteLoading, setInviteLoading] = useState(false);
     const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
     const [newMemberEmail, setNewMemberEmail] = useState('');
-    const [newMemberName, setNewMemberName] = useState('');
-    const [newMemberRole, setNewMemberRole] = useState<UserRole>(UserRole.LEARNER);
     const [searchTerm, setSearchTerm] = useState('');
     const [showSuccess, setShowSuccess] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
-    useEffect(() => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(members));
-    }, [members]);
+    const loadTeams = () => {
+        setLoading(true);
+        teamsApi.list()
+            .then((res: { data?: Team[] }) => {
+                const list = Array.isArray(res.data) ? res.data : [];
+                setTeams(list);
+                if (list.length > 0 && !selectedTeam) setSelectedTeam(list[0]);
+            })
+            .catch(() => setTeams([]))
+            .finally(() => setLoading(false));
+    };
+
+    useEffect(() => { loadTeams(); }, []);
+
+    const members: TeamMember[] = selectedTeam?.members?.map((m: { id: string; user?: { id: string; name: string; email: string }; role: string; status: string }) => ({
+        id: m.user?.id || m.id,
+        name: m.user?.name || '—',
+        email: m.user?.email || '—',
+        role: m.role === 'OWNER' ? UserRole.ADMIN : UserRole.LEARNER,
+        status: m.status || 'Active',
+        riskScore: 0,
+        coursesCompleted: 0
+    })) || [];
+
+    const handleCreateTeam = () => {
+        teamsApi.create('My Team').then(() => loadTeams()).catch(() => setError('Failed to create team'));
+    };
 
     const handleInvite = (e: React.FormEvent) => {
         e.preventDefault();
-        const newMember: TeamMember = {
-            id: `tm-${Date.now()}`,
-            name: newMemberName,
-            email: newMemberEmail,
-            role: newMemberRole,
-            status: 'Pending',
-            lastActive: '-',
-            coursesCompleted: 0,
-            riskScore: 0
-        };
-        setMembers([...members, newMember]);
-        setIsInviteModalOpen(false);
-        setNewMemberName('');
-        setNewMemberEmail('');
-        
-        setShowSuccess(true);
-        setTimeout(() => setShowSuccess(false), 3000);
+        if (!selectedTeam || !newMemberEmail.trim()) return;
+        setInviteLoading(true);
+        setError(null);
+        teamsApi.invite(selectedTeam.id, newMemberEmail.trim())
+            .then(() => {
+                setIsInviteModalOpen(false);
+                setNewMemberEmail('');
+                setShowSuccess(true);
+                setTimeout(() => setShowSuccess(false), 3000);
+                loadTeams();
+            })
+            .catch((err: { message?: string }) => setError(err?.message || 'Invite failed'))
+            .finally(() => setInviteLoading(false));
     };
 
     const handleDelete = (id: string) => {
-        if (confirm('Are you sure you want to remove this member?')) {
-            setMembers(members.filter(m => m.id !== id));
-        }
+        if (!selectedTeam || !confirm('Remove this member?')) return;
+        teamsApi.removeMember(selectedTeam.id, id).then(() => { loadTeams(); if (selectedTeam) teamsApi.getById(selectedTeam.id).then((r: { data?: Team }) => r.data && setSelectedTeam(r.data)); }).catch(() => {});
     };
 
-    const filteredMembers = members.filter(m => 
-        m.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    const filteredMembers = members.filter(m =>
+        m.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         m.email.toLowerCase().includes(searchTerm.toLowerCase())
     );
+
+    if (loading) {
+        return (
+            <div className="p-4 md:p-8 max-w-7xl mx-auto flex items-center justify-center">
+                <Loader2 className="animate-spin text-indigo-600" size={32} />
+            </div>
+        );
+    }
+
+    if (teams.length === 0) {
+        return (
+            <div className="p-4 md:p-8 max-w-7xl mx-auto text-center">
+                <h1 className="text-2xl font-bold text-slate-900 mb-2">No team yet</h1>
+                <p className="text-slate-500 mb-4">Create a team to invite members.</p>
+                <button onClick={handleCreateTeam} className="bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700">Create team</button>
+            </div>
+        );
+    }
 
     return (
         <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative animate-in fade-in">
@@ -79,15 +111,27 @@ export const TeamManagement: React.FC = () => {
                     <span>Invitation sent!</span>
                 </div>
             )}
+            {error && <div className="bg-amber-50 text-amber-800 px-4 py-2 rounded-lg">{error}</div>}
 
-            <div className="flex justify-between items-center">
+            <div className="flex justify-between items-center flex-wrap gap-4">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900">Workforce Intelligence</h1>
                     <p className="text-slate-500">Monitor engagement and retention risk.</p>
                 </div>
-                <button onClick={() => setIsInviteModalOpen(true)} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-indigo-700">
-                    <UserPlus size={18} /> Invite
-                </button>
+                <div className="flex gap-2 items-center">
+                    {teams.length > 1 && (
+                        <select
+                            value={selectedTeam?.id || ''}
+                            onChange={(e) => setSelectedTeam(teams.find(t => t.id === e.target.value) || null)}
+                            className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                        >
+                            {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                        </select>
+                    )}
+                    <button onClick={() => setIsInviteModalOpen(true)} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-indigo-700">
+                        <UserPlus size={18} /> Invite
+                    </button>
+                </div>
             </div>
 
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
@@ -162,11 +206,10 @@ export const TeamManagement: React.FC = () => {
                     <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
                         <h2 className="text-xl font-bold mb-4">Invite Member</h2>
                         <form onSubmit={handleInvite} className="space-y-4">
-                            <input type="text" placeholder="Name" className="w-full p-2 border rounded" value={newMemberName} onChange={e => setNewMemberName(e.target.value)} required />
                             <input type="email" placeholder="Email" className="w-full p-2 border rounded" value={newMemberEmail} onChange={e => setNewMemberEmail(e.target.value)} required />
                             <div className="flex gap-2 justify-end pt-4">
                                 <button type="button" onClick={() => setIsInviteModalOpen(false)} className="px-4 py-2 text-slate-500">Cancel</button>
-                                <button type="submit" className="px-4 py-2 bg-indigo-600 text-white rounded font-bold">Send Invite</button>
+                                <button type="submit" disabled={inviteLoading} className="px-4 py-2 bg-indigo-600 text-white rounded font-bold disabled:opacity-50">{inviteLoading ? 'Sending…' : 'Send Invite'}</button>
                             </div>
                         </form>
                     </div>

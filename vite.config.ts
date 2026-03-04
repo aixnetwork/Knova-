@@ -4,13 +4,16 @@ import react from '@vitejs/plugin-react'
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
-  // Load env file based on `mode` in the current working directory.
+  // Load env file based on `mode` in the current working directory (empty prefix = load all vars)
   const env = loadEnv(mode, (process as any).cwd(), '');
+  // Expose Gemini key to client: support both GEMINI_API_KEY and VITE_GEMINI_API_KEY in .env.local
+  const geminiKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
   return {
     plugins: [react()],
     define: {
-      // Polyfill process.env for the browser so the Google GenAI SDK works seamlessly
-      'process.env': JSON.stringify(env)
+      'process.env': JSON.stringify(env),
+      'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(geminiKey),
+      'import.meta.env.GEMINI_API_KEY': JSON.stringify(geminiKey),
     },
     build: {
       outDir: 'dist',
