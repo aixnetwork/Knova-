@@ -1,9 +1,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { LiveServerMessage, Modality } from '@google/genai';
-import { Mic, MicOff, PhoneOff, User, Sparkles, Briefcase, Settings2, Play, ChevronDown, Loader2, Image as ImageIcon, Video, VideoOff, MonitorPlay, BookOpen } from 'lucide-react';
+import { Mic, MicOff, PhoneOff, User, Sparkles, Briefcase, Settings2, Play, ChevronDown, Loader2, Image as ImageIcon, Video, VideoOff, MonitorPlay, BookOpen, RefreshCw, Bot } from 'lucide-react';
 import { EXPERT_PERSONAS, generatePersonaAvatar, getClient } from '../services/geminiService';
 import { ExpertPersona } from '../types';
+import { expertPersonasApi, mapBackendPersonaToExpertPersona, type ExpertPersonaBackend } from '../services/api';
 
 const COLOR_OPTIONS = [
   { tailwind: 'bg-indigo-500', hex: '#6366f1' },
@@ -16,9 +17,6 @@ const COLOR_OPTIONS = [
 
 const VOICE_OPTIONS = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
 
-// Changed to knovatwin
-const PERSONAS_STORAGE_KEY = 'knovatwin_expert_personas_v1';
-
 // Helper for delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -30,45 +28,32 @@ interface LiveTutorProps {
 }
 
 export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, topic, contextContent, customPersona }) => {
-  // Initialize personas from localStorage to persist customizations
-  const [personas, setPersonas] = useState<ExpertPersona[]>(() => {
-    try {
-      const saved = localStorage.getItem(PERSONAS_STORAGE_KEY);
-      if (saved) {
-          const parsed = JSON.parse(saved);
-          
-          // 1. Merge updates into Default Personas (e.g. if user changed Dr. Nexus's color)
-          const mergedDefaults = EXPERT_PERSONAS.map(defaultPersona => {
-              const savedPersona = parsed.find((p: any) => p.id === defaultPersona.id);
-              if (savedPersona) {
-                  return {
-                      ...defaultPersona,
-                      ...savedPersona,
-                      // Ensure critical fields aren't lost if schema changes
-                      heyGenAvatarId: savedPersona.heyGenAvatarId || defaultPersona.heyGenAvatarId
-                  };
-              }
-              return defaultPersona;
-          });
+  // Load personas from API (Twin Lab agents); no mock until we've tried the API
+  const [personas, setPersonas] = useState<ExpertPersona[]>([]);
+  const [personasLoaded, setPersonasLoaded] = useState(false);
+  const [personasError, setPersonasError] = useState<string | null>(null);
 
-          // 2. Identify Custom Twins (IDs that are NOT in the default set)
-          const defaultIds = new Set(EXPERT_PERSONAS.map(p => p.id));
-          const customTwins = parsed.filter((p: any) => !defaultIds.has(p.id));
+  const loadPersonas = () => {
+    setPersonasError(null);
+    expertPersonasApi.list()
+      .then((response: { data?: unknown }) => {
+        const raw = response?.data ?? response;
+        const list = Array.isArray(raw) ? raw : [];
+        // Only show DB personas; no hardcoded fallback when API returns empty
+        const mapped = list.map((p) => mapBackendPersonaToExpertPersona(p as ExpertPersonaBackend));
+        setPersonas(mapped);
+        setPersonasLoaded(true);
+      })
+      .catch(() => {
+        setPersonas(EXPERT_PERSONAS);
+        setPersonasLoaded(true);
+        setPersonasError('Could not load your Twins. Showing defaults.');
+      });
+  };
 
-          // 3. Combine
-          return [...mergedDefaults, ...customTwins];
-      }
-      return EXPERT_PERSONAS;
-    } catch (e) {
-      console.error("Failed to load personas from storage", e);
-      return EXPERT_PERSONAS;
-    }
-  });
-
-  // Persist persona changes
   useEffect(() => {
-    localStorage.setItem(PERSONAS_STORAGE_KEY, JSON.stringify(personas));
-  }, [personas]);
+    loadPersonas();
+  }, []);
 
   // If customPersona provided (Test Mode), use it directly. Otherwise null initially.
   const [selectedPersona, setSelectedPersona] = useState<ExpertPersona | null>(customPersona || null);
@@ -497,12 +482,32 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, topic, contextCon
             <button onClick={onClose} className="absolute top-4 right-4 md:top-8 md:right-8 p-2 hover:bg-white/10 rounded-full"><PhoneOff /></button>
             <div className="max-w-5xl w-full flex flex-col items-center my-auto">
                 <h2 className="text-2xl md:text-3xl font-bold mb-2 text-center mt-12 md:mt-0">Knowledge Twin Selection</h2>
-                <p className="text-slate-400 mb-8 text-center max-w-xl text-sm md:text-base">
+                <p className="text-slate-400 mb-4 text-center max-w-xl text-sm md:text-base">
                     Don't just learn the theory. Consult with our digital experts who have decades of simulated "Tribal Knowledge" and experience.
                 </p>
-                
+                {personasError && <p className="text-amber-400 text-sm mb-4">{personasError}</p>}
+                {personasLoaded && (
+                  <button type="button" onClick={loadPersonas} className="mb-6 text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                    <RefreshCw size={14} /> Refresh list from Twin Lab
+                  </button>
+                )}
+                {!personasLoaded && (
+                  <div className="flex items-center gap-2 text-slate-400 mb-8">
+                    <Loader2 size={20} className="animate-spin" /> Loading your Twins…
+                  </div>
+                )}
+                {personasLoaded && personas.length === 0 && (
+                  <div className="w-full max-w-md py-12 px-6 bg-slate-800/50 border border-slate-700 rounded-2xl text-center">
+                    <Bot size={48} className="mx-auto mb-4 text-slate-500" />
+                    <h3 className="text-lg font-bold text-white mb-2">No Twins yet</h3>
+                    <p className="text-slate-400 text-sm mb-6">Create your AI agents in Twin Lab and they will appear here for Live Tutor.</p>
+                    <button type="button" onClick={() => { onClose(); /* parent should switch to Twin Lab */ }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-500">
+                      Go to Twin Lab
+                    </button>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full pb-8">
-                    {personas.map(persona => (
+                    {personasLoaded && personas.length > 0 && personas.map(persona => (
                         <div 
                             key={persona.id}
                             onClick={() => setSelectedPersona(persona)}

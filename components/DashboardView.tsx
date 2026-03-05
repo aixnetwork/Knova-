@@ -32,10 +32,12 @@ import { OnboardingAssistant } from './OnboardingAssistant';
 import { generateDailyInsight } from '../services/geminiService';
 import { syncEngine, SyncStatus } from '../services/syncService';
 import { DashboardQuickStart } from './DashboardQuickStart';
+import { expertPersonasApi } from '../services/api';
 
 interface DashboardViewProps {
     user: UserProfile | null;
     courses: Course[];
+    /** From App: totalCourses/completedModules are derived from courses; level, streakDays, etc. are from backend or placeholders */
     stats: UserStats;
     storageStatus: 'OK' | 'WARNING' | 'CRITICAL';
     justPublishedCourse: Course | null;
@@ -76,16 +78,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         syncEngine.subscribe(status => setSyncStatus(status));
     }, []);
 
-    // Load custom twins count for checklist
+    // Load twin count from API for checklist
     const [twinCount, setTwinCount] = useState(0);
     useEffect(() => {
-        const stored = localStorage.getItem('knovatwin_expert_personas_v1');
-        if (stored) {
-            try {
-                const parsed = JSON.parse(stored);
-                setTwinCount(parsed.length || 0);
-            } catch (e) {}
-        }
+        expertPersonasApi.list()
+            .then(({ data }) => setTwinCount(Array.isArray(data) ? data.length : 0))
+            .catch(() => {});
     }, []);
 
     const isSuperAdmin = user?.email === 'knovaadmin' || user?.name?.toLowerCase() === 'knova admin' || user?.name?.toLowerCase() === 'knovaadmin';
@@ -325,12 +323,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             </h3>
                         </div>
 
+                        {(() => {
+                            const totalModules = (courses || []).reduce((acc, c) => acc + (c.modules?.length || 0), 0);
+                            const progressPct = totalModules > 0 ? Math.round((stats.completedModules / totalModules) * 100) : 0;
+                            return (
                         <div className="space-y-4">
                              <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Current Goal</p>
-                                <p className="text-sm font-bold text-slate-900">Complete AI Ethics Assessment</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Progress</p>
+                                <p className="text-sm font-bold text-slate-900">{stats.completedModules} of {totalModules} modules</p>
                                 <div className="mt-2 w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                                    <div className="h-full bg-indigo-500 w-1/3"></div>
+                                    <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progressPct}%` }} />
                                 </div>
                              </div>
 
@@ -338,18 +340,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Active Streak</p>
                                 <div className="flex items-center gap-2">
                                     <Flame size={16} className="text-orange-500" />
-                                    <p className="text-sm font-bold text-slate-900">4 Day Learning Streak</p>
+                                    <p className="text-sm font-bold text-slate-900">{stats.streakDays} Day Learning Streak</p>
                                 </div>
                              </div>
 
                              <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Next Live Session</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Mastery</p>
                                 <div className="flex items-center gap-2">
-                                    <Calendar size={16} className="text-indigo-500" />
-                                    <p className="text-sm font-bold text-slate-900">Oct 12, 2:00 PM</p>
+                                    <Target size={16} className="text-indigo-500" />
+                                    <p className="text-sm font-bold text-slate-900">{stats.masteryScore}% Mastery Score</p>
                                 </div>
                              </div>
                         </div>
+                            );
+                        })()}
 
                         <div className="pt-6 mt-6 border-t border-slate-100">
                             <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">

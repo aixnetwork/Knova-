@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { DollarSign, Users, MousePointer, Copy, Share2, TrendingUp, Gift } from 'lucide-react';
+import { DollarSign, Users, MousePointer, Copy, Share2, TrendingUp, Gift, Sparkles } from 'lucide-react';
 import { affiliateApi } from '../services/api';
+
+const ComingSoonBanner: React.FC = () => (
+    <div className="mb-6 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-800 px-4 py-3 flex items-center gap-3">
+        <Sparkles className="shrink-0 text-indigo-600" size={22} />
+        <p className="text-sm font-medium">
+            <span className="font-bold">Coming soon.</span> This feature will be available once we have a payment module.
+        </p>
+    </div>
+);
 
 export const AffiliateView: React.FC = () => {
     const [copied, setCopied] = useState(false);
@@ -64,6 +73,7 @@ export const AffiliateView: React.FC = () => {
     if (loading && !notJoined) {
         return (
             <div className="p-4 md:p-8 max-w-7xl mx-auto">
+                <ComingSoonBanner />
                 <p className="text-slate-500">Loading affiliate data…</p>
             </div>
         );
@@ -72,17 +82,18 @@ export const AffiliateView: React.FC = () => {
     if (notJoined) {
         return (
             <div className="p-4 md:p-8 max-w-7xl mx-auto">
+                <ComingSoonBanner />
                 <div className="max-w-lg mx-auto text-center bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
                     <Gift className="w-16 h-16 text-rose-500 mx-auto mb-4" />
                     <h1 className="text-2xl font-bold text-slate-900 mb-2">Join the Affiliate Program</h1>
                     <p className="text-slate-600 mb-6">Share KnovaTwin and earn 20% recurring commission on every referral.</p>
                     {error && <p className="text-amber-600 text-sm mb-4">{error}</p>}
                     <button
-                        onClick={handleJoin}
-                        disabled={joinLoading}
-                        className="bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white font-bold px-6 py-3 rounded-xl transition-colors"
+                        type="button"
+                        disabled
+                        className="bg-slate-300 text-slate-500 cursor-not-allowed font-bold px-6 py-3 rounded-xl transition-colors"
                     >
-                        {joinLoading ? 'Joining…' : 'Join program'}
+                        Join program (coming soon)
                     </button>
                 </div>
             </div>
@@ -91,6 +102,7 @@ export const AffiliateView: React.FC = () => {
 
     return (
         <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8">
+            <ComingSoonBanner />
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
                     <h1 className="text-2xl md:text-3xl font-bold text-slate-900 flex items-center gap-3">

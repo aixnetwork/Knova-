@@ -3,6 +3,8 @@
  * All FE → BE requests go through this module.
  */
 
+import type { ExpertPersona } from '../types';
+
 const getBaseUrl = (): string => {
   const url = typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL;
   return url || 'http://localhost:5000';
@@ -188,17 +190,20 @@ export const adminApi = {
 };
 
 // --- Courses ---
-export type CourseRes = { id: string; topic: string; description: string; status?: string; modules?: CourseModuleRes[] };
+export type CourseRes = { id: string; title?: string; topic: string; description: string; status?: string; modules?: CourseModuleRes[] };
 
-export type CourseModuleRes = { id: string; name: string; description?: string | null; keyConcepts: string[] };
+export type CourseModuleRes = { id: string; name: string; description?: string | null; keyConcepts: string[]; content?: string | null };
 
 export const coursesApi = {
   list: () => request<CourseRes[]>('/courses'),
   getById: (id: string) => request<CourseRes>(`/courses/${id}`),
-  create: (payload: { topic: string; description: string; modules: { name?: string; title?: string; description?: string; keyConcepts?: string[] }[]; status?: string }) =>
+  create: (payload: { title?: string; topic: string; description: string; modules: { name?: string; title?: string; description?: string; keyConcepts?: string[]; content?: string }[]; status?: string }) =>
     request<CourseRes>('/courses', { method: 'POST', body: JSON.stringify(payload) }),
-  update: (id: string, payload: { topic?: string; description?: string; modules?: { name?: string; title?: string; description?: string; keyConcepts?: string[] }[]; status?: string }) =>
+  update: (id: string, payload: { title?: string; topic?: string; description?: string; modules?: { name?: string; title?: string; description?: string; keyConcepts?: string[]; content?: string }[]; status?: string }) =>
     request<CourseRes>(`/courses/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  delete: (id: string) => request<unknown>(`/courses/${id}`, { method: 'DELETE' }),
+  updateModuleContent: (courseId: string, moduleId: string, payload: { content: string }) =>
+    request<CourseModuleRes>(`/courses/${courseId}/modules/${moduleId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
 };
 
 // --- Enrollments ---
@@ -234,28 +239,122 @@ export const cohortsApi = {
 };
 
 // --- Assessments ---
+export type AssessmentInsightRes = {
+  id: string;
+  summary: string;
+  recommendations: string[];
+  strategyScore: number;
+  executionScore: number;
+  technologyScore: number;
+  peopleScore: number;
+  riskScore: number;
+  submittedAt: string;
+  userId: string;
+  user?: { id: string; name: string; email: string; avatarUrl?: string | null };
+};
+export type AssessmentRes = {
+  id: string;
+  title: string;
+  companyName: string;
+  status: string;
+  aiSynthesis?: string | null;
+  deadline: string | null;
+  description: string | null;
+  createdAt: string;
+  insights?: AssessmentInsightRes[];
+};
+export function mapAssessmentResToExternal(be: AssessmentRes): import('../types').ExternalAssessment {
+  const insights = (be.insights || []).map((i) => ({
+    id: i.id,
+    expertName: i.user?.name ?? 'Expert',
+    expertRole: 'Reviewer',
+    avatarUrl: i.user?.avatarUrl ?? '',
+    score: Math.round((i.strategyScore + i.executionScore + i.technologyScore + i.peopleScore + i.riskScore) / 5),
+    summary: i.summary,
+    recommendations: Array.isArray(i.recommendations) ? i.recommendations : [],
+    submittedAt: new Date(i.submittedAt).getTime(),
+    metrics: {
+      strategy: i.strategyScore,
+      execution: i.executionScore,
+      technology: i.technologyScore,
+      people: i.peopleScore,
+      risk: i.riskScore,
+    },
+  }));
+  const deadline = be.deadline ? (typeof be.deadline === 'string' ? be.deadline : (be.deadline as unknown as { toISOString?: () => string })?.toISOString?.()?.split('T')[0] ?? '') : '';
+  return {
+    id: be.id,
+    title: be.title,
+    companyName: be.companyName,
+    status: (be.status === 'COMPLETED' || be.status === 'IN_PROGRESS' ? be.status : 'OPEN') as 'OPEN' | 'IN_PROGRESS' | 'COMPLETED',
+    createdDate: be.createdAt?.toString().split('T')[0] ?? '',
+    deadline: deadline || new Date(Date.now() + 12096e5).toISOString().split('T')[0],
+    description: be.description ?? '',
+    invitedExperts: insights.length,
+    insights,
+    aiSynthesis: be.aiSynthesis ?? undefined,
+  };
+}
 export const assessmentsApi = {
-  list: () => request<unknown[]>('/assessments'),
+  list: () => request<AssessmentRes[]>('/assessments'),
   create: (payload: { title?: string; companyName?: string; status?: string; deadline?: string; description?: string }) =>
-    request<unknown>('/assessments', { method: 'POST', body: JSON.stringify(payload) }),
-  getById: (id: string) => request<unknown>(`/assessments/${id}`),
-  addInsight: (id: string, payload: unknown) => request<unknown>(`/assessments/${id}/insights`, { method: 'POST', body: JSON.stringify(payload) }),
+    request<AssessmentRes>('/assessments', { method: 'POST', body: JSON.stringify(payload) }),
+  getById: (id: string) => request<AssessmentRes>(`/assessments/${id}`),
+  update: (id: string, payload: { status?: string; aiSynthesis?: string }) =>
+    request<AssessmentRes>(`/assessments/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  addInsight: (id: string, payload: { summary: string; recommendations: string[]; strategyScore: number; executionScore: number; technologyScore: number; peopleScore: number; riskScore: number }) =>
+    request<AssessmentInsightRes>(`/assessments/${id}/insights`, { method: 'POST', body: JSON.stringify(payload) }),
 };
 
 // --- Pathfinder ---
+export type PathfinderStateRes = {
+  targetRole: string;
+  skillData: string;
+  recommendedCourseIds?: string[];
+};
 export const pathfinderApi = {
-  get: () => request<{ targetRole: string; skillData: string } | null>('/pathfinder'),
-  save: (payload: { targetRole?: string; skillData?: string | object }) =>
-    request<unknown>('/pathfinder', { method: 'POST', body: JSON.stringify(payload) }),
+  get: () => request<PathfinderStateRes | null>('/pathfinder'),
+  save: (payload: { targetRole?: string; skillData?: string | object; recommendedCourseIds?: string[] }) =>
+    request<PathfinderStateRes>('/pathfinder', { method: 'POST', body: JSON.stringify(payload) }),
+  getRecommendedCourseIds: (targetRole?: string) => {
+    const q = targetRole ? `?targetRole=${encodeURIComponent(targetRole)}` : '';
+    return request<{ courseIds: string[] }>(`/pathfinder/recommended-courses${q}`);
+  },
+  enrollBridge: () =>
+    request<{ enrolled: string[] }>('/pathfinder/enroll-bridge', { method: 'POST' }),
 };
 
 // --- Expert Personas (Twins) ---
+export type ExpertPersonaBackend = {
+  id: string;
+  name: string;
+  role: string;
+  systemPrompt: string;
+  accentColor?: string;
+  voiceName?: string;
+  avatarUrl?: string | null;
+  yearsExperience?: number;
+};
+export function mapBackendPersonaToExpertPersona(row: ExpertPersonaBackend): ExpertPersona {
+  return {
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    systemPrompt: row.systemPrompt ?? '',
+    accentColor: row.accentColor ?? '#6366f1',
+    voiceName: row.voiceName ?? 'Kore',
+    yearsExperience: row.yearsExperience ?? 5,
+    avatarUrl: row.avatarUrl ?? undefined,
+  };
+}
+
 export const expertPersonasApi = {
-  list: () => request<unknown[]>('/expert-personas'),
+  list: () => request<ExpertPersonaBackend[]>('/expert-personas'),
   create: (payload: { name?: string; role?: string; systemPrompt?: string; accentColor?: string; voiceName?: string; avatarUrl?: string; yearsExperience?: number }) =>
-    request<unknown>('/expert-personas', { method: 'POST', body: JSON.stringify(payload) }),
-  getById: (id: string) => request<unknown>(`/expert-personas/${id}`),
-  update: (id: string, payload: unknown) => request<unknown>(`/expert-personas/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+    request<ExpertPersonaBackend>('/expert-personas', { method: 'POST', body: JSON.stringify(payload) }),
+  getById: (id: string) => request<ExpertPersonaBackend>(`/expert-personas/${id}`),
+  update: (id: string, payload: { name?: string; role?: string; systemPrompt?: string; accentColor?: string; voiceName?: string; avatarUrl?: string; yearsExperience?: number }) =>
+    request<ExpertPersonaBackend>(`/expert-personas/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   delete: (id: string) => request<unknown>(`/expert-personas/${id}`, { method: 'DELETE' }),
 };
 

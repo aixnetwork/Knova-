@@ -24,6 +24,7 @@ export const ImpactDashboard: React.FC = () => {
     const [industry, setIndustry] = useState('');
     const [strategy, setStrategy] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
+    const [generateError, setGenerateError] = useState<string | null>(null);
     const [showRosterModal, setShowRosterModal] = useState(false);
     
     // Default Mock Data Structures
@@ -64,17 +65,26 @@ export const ImpactDashboard: React.FC = () => {
     };
 
     const handleGenerateReport = async () => {
-        if (!industry || !strategy) return;
+        if (!industry?.trim() || !strategy?.trim()) return;
+        setGenerateError(null);
         setIsGenerating(true);
         setSelectedCell(null);
         try {
-            const result = await generateBiceData(industry, strategy);
-            if (result && result.employees) {
-                setData(result);
+            const result = await generateBiceData(industry.trim(), strategy.trim());
+            if (result && Array.isArray(result.departments) && Array.isArray(result.skills) && Array.isArray(result.employees) && result.employees.length > 0 && result.departments.length > 0 && result.skills.length > 0) {
+                setData({
+                    departments: result.departments,
+                    skills: result.skills,
+                    employees: result.employees,
+                    criticalAction: result.criticalAction,
+                });
+            } else {
+                setGenerateError("Could not generate report. The response was invalid. Please try again.");
             }
         } catch (e) {
             console.error("Failed to generate BICE report", e);
-            alert("Could not generate report. Please try again.");
+            const msg = e instanceof Error ? e.message : "Could not generate report. Check your API key (Settings) and try again.";
+            setGenerateError(msg);
         } finally {
             setIsGenerating(false);
         }
@@ -143,7 +153,7 @@ export const ImpactDashboard: React.FC = () => {
                         <input 
                             type="text" 
                             value={industry}
-                            onChange={(e) => setIndustry(e.target.value)}
+                            onChange={(e) => { setIndustry(e.target.value); setGenerateError(null); }}
                             placeholder="e.g. Fintech, Healthcare, Manufacturing" 
                             className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none placeholder-slate-500"
                         />
@@ -153,20 +163,27 @@ export const ImpactDashboard: React.FC = () => {
                         <input 
                             type="text" 
                             value={strategy}
-                            onChange={(e) => setStrategy(e.target.value)}
+                            onChange={(e) => { setStrategy(e.target.value); setGenerateError(null); }}
                             placeholder="e.g. Accelerate AI Adoption, Improve Cybersecurity Posture" 
                             className="w-full bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none placeholder-slate-500"
                         />
                     </div>
                     <button 
+                        type="button"
                         onClick={handleGenerateReport}
-                        disabled={isGenerating || !industry || !strategy}
+                        disabled={isGenerating || !industry.trim() || !strategy.trim()}
                         className="bg-emerald-500 text-white px-6 py-3 rounded-xl font-bold hover:bg-emerald-400 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-900/50 h-[50px]"
                     >
                         {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles size={18} />}
                         {isGenerating ? 'Analyzing...' : 'Simulate Impact'}
                     </button>
                 </div>
+                {generateError && (
+                    <div className="mt-4 flex items-start gap-2 rounded-lg bg-amber-500/20 border border-amber-400/50 text-amber-100 px-4 py-3 text-sm">
+                        <AlertTriangle className="shrink-0 mt-0.5" size={18} />
+                        <span>{generateError}</span>
+                    </div>
+                )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

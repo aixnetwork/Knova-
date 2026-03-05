@@ -11,15 +11,22 @@ interface TeamMember {
     status: string;
     riskScore: number;
     coursesCompleted: number;
+    isInvitation?: boolean;
 }
 
 interface Team {
     id: string;
     name: string;
     members?: { id: string; user?: { id: string; name: string; email: string }; role: string; status: string }[];
+    invitations?: { id: string; email: string; status: string; expiresAt?: string }[];
 }
 
-export const TeamManagement: React.FC = () => {
+interface TeamManagementProps {
+    /** When opening from URL e.g. /workforce/teams/:teamId */
+    initialTeamId?: string | null;
+}
+
+export const TeamManagement: React.FC<TeamManagementProps> = ({ initialTeamId }) => {
     const [teams, setTeams] = useState<Team[]>([]);
     const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
     const [loading, setLoading] = useState(true);
@@ -28,34 +35,77 @@ export const TeamManagement: React.FC = () => {
     const [newMemberEmail, setNewMemberEmail] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
     const [showSuccess, setShowSuccess] = useState(false);
+    const [successMessage, setSuccessMessage] = useState('Invitation sent by email!');
     const [error, setError] = useState<string | null>(null);
+    const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+    const [newTeamName, setNewTeamName] = useState('');
 
     const loadTeams = () => {
         setLoading(true);
+        setError(null);
         teamsApi.list()
             .then((res: { data?: Team[] }) => {
                 const list = Array.isArray(res.data) ? res.data : [];
                 setTeams(list);
-                if (list.length > 0 && !selectedTeam) setSelectedTeam(list[0]);
+                setSelectedTeam((prev) => {
+                    if (list.length === 0) return null;
+                    const next = list.find((t) => t.id === prev?.id) ?? list[0];
+                    return next ?? null;
+                });
             })
-            .catch(() => setTeams([]))
+            .catch((err: { message?: string }) => {
+                setTeams([]);
+                setError(err?.message || 'Failed to load teams');
+            })
             .finally(() => setLoading(false));
     };
 
     useEffect(() => { loadTeams(); }, []);
 
-    const members: TeamMember[] = selectedTeam?.members?.map((m: { id: string; user?: { id: string; name: string; email: string }; role: string; status: string }) => ({
-        id: m.user?.id || m.id,
-        name: m.user?.name || '—',
-        email: m.user?.email || '—',
-        role: m.role === 'OWNER' ? UserRole.ADMIN : UserRole.LEARNER,
-        status: m.status || 'Active',
-        riskScore: 0,
-        coursesCompleted: 0
-    })) || [];
+    useEffect(() => {
+        if (initialTeamId && teams.length > 0) {
+            const team = teams.find((t) => t.id === initialTeamId);
+            if (team) setSelectedTeam(team);
+        }
+    }, [initialTeamId, teams]);
 
-    const handleCreateTeam = () => {
-        teamsApi.create('My Team').then(() => loadTeams()).catch(() => setError('Failed to create team'));
+    const members: (TeamMember & { memberRole: string })[] = [
+        ...(selectedTeam?.members?.map((m: { id: string; user?: { id: string; name: string; email: string }; role: string; status: string }) => ({
+            id: m.user?.id || m.id,
+            name: m.user?.name || '—',
+            email: m.user?.email || '—',
+            role: m.role === 'OWNER' ? UserRole.ADMIN : UserRole.LEARNER,
+            memberRole: m.role || 'MEMBER',
+            status: 'Active',
+            riskScore: 0,
+            coursesCompleted: 0,
+            isInvitation: false,
+        })) || []),
+        ...(selectedTeam?.invitations?.filter((inv: { status: string }) => (inv.status || 'PENDING').toUpperCase() !== 'ACCEPTED').map((inv: { id: string; email: string; status: string }) => ({
+            id: `inv-${inv.id}`,
+            name: '—',
+            email: inv.email,
+            role: UserRole.LEARNER,
+            memberRole: 'Invited',
+            status: inv.status === 'PENDING' ? 'Pending' : inv.status,
+            riskScore: 0,
+            coursesCompleted: 0,
+            isInvitation: true,
+        })) || []),
+    ];
+
+    const handleCreateTeam = (name?: string) => {
+        const teamName = (name || newTeamName || 'My Team').trim() || 'My Team';
+        setError(null);
+        teamsApi.create(teamName)
+            .then((res: { data?: Team }) => {
+                const created = res?.data;
+                setIsCreateModalOpen(false);
+                setNewTeamName('');
+                loadTeams();
+                if (created) setSelectedTeam(created);
+            })
+            .catch((err: { message?: string }) => setError(err?.message || 'Failed to create team'));
     };
 
     const handleInvite = (e: React.FormEvent) => {
@@ -64,20 +114,28 @@ export const TeamManagement: React.FC = () => {
         setInviteLoading(true);
         setError(null);
         teamsApi.invite(selectedTeam.id, newMemberEmail.trim())
-            .then(() => {
+            .then((res: { data?: { emailSent?: boolean } }) => {
                 setIsInviteModalOpen(false);
                 setNewMemberEmail('');
                 setShowSuccess(true);
-                setTimeout(() => setShowSuccess(false), 3000);
+                setSuccessMessage(res?.data?.emailSent === false ? 'Invitation created. (Email could not be sent.)' : 'Invitation sent by email!');
+                setTimeout(() => { setShowSuccess(false); setSuccessMessage('Invitation sent!'); }, 4000);
                 loadTeams();
+                teamsApi.getById(selectedTeam.id).then((r: { data?: Team }) => r.data && setSelectedTeam(r.data)).catch(() => {});
             })
             .catch((err: { message?: string }) => setError(err?.message || 'Invite failed'))
             .finally(() => setInviteLoading(false));
     };
 
-    const handleDelete = (id: string) => {
-        if (!selectedTeam || !confirm('Remove this member?')) return;
-        teamsApi.removeMember(selectedTeam.id, id).then(() => { loadTeams(); if (selectedTeam) teamsApi.getById(selectedTeam.id).then((r: { data?: Team }) => r.data && setSelectedTeam(r.data)); }).catch(() => {});
+    const handleRemoveMember = (id: string) => {
+        if (!selectedTeam || !confirm('Remove this member from the team?')) return;
+        setError(null);
+        teamsApi.removeMember(selectedTeam.id, id)
+            .then(() => {
+                loadTeams();
+                teamsApi.getById(selectedTeam.id).then((r: { data?: Team }) => r.data && setSelectedTeam(r.data)).catch(() => {});
+            })
+            .catch((err: { message?: string }) => setError(err?.message || 'Failed to remove member'));
     };
 
     const filteredMembers = members.filter(m =>
@@ -96,9 +154,22 @@ export const TeamManagement: React.FC = () => {
     if (teams.length === 0) {
         return (
             <div className="p-4 md:p-8 max-w-7xl mx-auto text-center">
+                {error && <div className="mb-4 bg-amber-50 text-amber-800 px-4 py-2 rounded-lg max-w-md mx-auto">{error}</div>}
                 <h1 className="text-2xl font-bold text-slate-900 mb-2">No team yet</h1>
                 <p className="text-slate-500 mb-4">Create a team to invite members.</p>
-                <button onClick={handleCreateTeam} className="bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700">Create team</button>
+                <button type="button" onClick={() => setIsCreateModalOpen(true)} className="bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700">Create team</button>
+                {isCreateModalOpen && (
+                    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+                        <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                            <h2 className="text-xl font-bold mb-4">Create team</h2>
+                            <input type="text" placeholder="Team name" className="w-full p-3 border border-slate-200 rounded-lg mb-4" value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} />
+                            <div className="flex gap-2 justify-end">
+                                <button type="button" onClick={() => { setIsCreateModalOpen(false); setNewTeamName(''); }} className="px-4 py-2 text-slate-500">Cancel</button>
+                                <button type="button" onClick={() => handleCreateTeam()} className="px-4 py-2 bg-indigo-600 text-white rounded font-bold">Create</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }
@@ -106,9 +177,9 @@ export const TeamManagement: React.FC = () => {
     return (
         <div className="p-4 md:p-8 max-w-7xl mx-auto space-y-8 relative animate-in fade-in">
             {showSuccess && (
-                <div className="absolute top-4 right-4 bg-emerald-600 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-in slide-in-from-top-4 z-50">
-                    <CheckCircle size={20} />
-                    <span>Invitation sent!</span>
+                <div className="absolute top-4 right-4 bg-emerald-600 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-in slide-in-from-top-4 z-50 max-w-sm">
+                    <CheckCircle size={20} className="shrink-0" />
+                    <span>{successMessage}</span>
                 </div>
             )}
             {error && <div className="bg-amber-50 text-amber-800 px-4 py-2 rounded-lg">{error}</div>}
@@ -128,8 +199,11 @@ export const TeamManagement: React.FC = () => {
                             {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                         </select>
                     )}
-                    <button onClick={() => setIsInviteModalOpen(true)} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-indigo-700">
+                    <button type="button" onClick={() => { setIsInviteModalOpen(true); setError(null); }} className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 hover:bg-indigo-700">
                         <UserPlus size={18} /> Invite
+                    </button>
+                    <button type="button" onClick={() => { setIsCreateModalOpen(true); setNewTeamName(''); setError(null); }} className="bg-white border border-slate-200 text-slate-700 px-4 py-2 rounded-lg font-bold hover:bg-slate-50">
+                        New team
                     </button>
                 </div>
             </div>
@@ -150,6 +224,7 @@ export const TeamManagement: React.FC = () => {
                         <tr>
                             <th className="px-6 py-4">Member</th>
                             <th className="px-6 py-4">Role</th>
+                            <th className="px-6 py-4">Status</th>
                             <th className="px-6 py-4">Engagement Risk</th>
                             <th className="px-6 py-4">Progress</th>
                             <th className="px-6 py-4 text-right"></th>
@@ -159,39 +234,59 @@ export const TeamManagement: React.FC = () => {
                         {filteredMembers.length > 0 ? filteredMembers.map(member => (
                             <tr key={member.id} className="hover:bg-slate-50">
                                 <td className="px-6 py-4">
-                                    <div className="font-bold text-slate-900">{member.name}</div>
+                                    <div className="font-bold text-slate-900">{member.isInvitation ? '—' : member.name}</div>
                                     <div className="text-xs text-slate-500">{member.email}</div>
                                 </td>
                                 <td className="px-6 py-4">
-                                    <span className={`px-2 py-1 rounded text-xs font-bold ${member.role === UserRole.FACILITATOR ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-                                        {member.role === UserRole.FACILITATOR ? 'Expert' : 'Learner'}
+                                    <span className={`px-2 py-1 rounded text-xs font-bold ${
+                                        member.memberRole === 'OWNER' ? 'bg-indigo-100 text-indigo-700' :
+                                        member.memberRole === 'Invited' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'
+                                    }`}>
+                                        {member.memberRole === 'OWNER' ? 'Owner' : member.memberRole === 'Invited' ? 'Invited' : 'Member'}
                                     </span>
                                 </td>
                                 <td className="px-6 py-4">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden">
-                                            <div 
-                                                className={`h-full rounded-full ${member.riskScore > 70 ? 'bg-red-500' : member.riskScore > 40 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                                                style={{ width: `${member.riskScore}%` }}
-                                            ></div>
+                                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                        member.status === 'Pending' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
+                                    }`}>
+                                        {member.status}
+                                    </span>
+                                </td>
+                                <td className="px-6 py-4">
+                                    {member.isInvitation ? (
+                                        <span className="text-xs text-slate-400">—</span>
+                                    ) : (
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-24 h-2 bg-slate-200 rounded-full overflow-hidden">
+                                                <div 
+                                                    className={`h-full rounded-full ${member.riskScore > 70 ? 'bg-red-500' : member.riskScore > 40 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                                                    style={{ width: `${member.riskScore}%` }}
+                                                ></div>
+                                            </div>
+                                            <span className={`text-xs font-bold ${member.riskScore > 70 ? 'text-red-600' : 'text-slate-600'}`}>
+                                                {member.riskScore > 70 ? 'High' : member.riskScore > 40 ? 'Medium' : 'Low'}
+                                            </span>
                                         </div>
-                                        <span className={`text-xs font-bold ${member.riskScore > 70 ? 'text-red-600' : 'text-slate-600'}`}>
-                                            {member.riskScore > 70 ? 'High' : member.riskScore > 40 ? 'Medium' : 'Low'}
-                                        </span>
-                                    </div>
+                                    )}
                                 </td>
                                 <td className="px-6 py-4 text-sm text-slate-600">
-                                    {member.coursesCompleted} Courses
+                                    {member.isInvitation ? '—' : `${member.coursesCompleted} Courses`}
                                 </td>
                                 <td className="px-6 py-4 text-right">
-                                    <button onClick={() => handleDelete(member.id)} className="text-slate-400 hover:text-red-500">
-                                        <Trash2 size={18} />
-                                    </button>
+                                    {member.memberRole === 'OWNER' ? (
+                                        <span className="text-xs text-slate-400">—</span>
+                                    ) : member.isInvitation ? (
+                                        <span className="text-xs text-slate-400">Pending</span>
+                                    ) : (
+                                        <button type="button" onClick={() => handleRemoveMember(member.id)} className="text-slate-400 hover:text-red-500" title="Remove member">
+                                            <Trash2 size={18} />
+                                        </button>
+                                    )}
                                 </td>
                             </tr>
                         )) : (
                             <tr>
-                                <td colSpan={5} className="px-6 py-12 text-center text-slate-400">
+                                <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
                                     No team members found. Invite someone to get started.
                                 </td>
                             </tr>
@@ -200,18 +295,30 @@ export const TeamManagement: React.FC = () => {
                 </table>
             </div>
 
-            {/* Modal Logic (Simplified for brevity, keep existing modal code structure) */}
             {isInviteModalOpen && (
                 <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
                     <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
                         <h2 className="text-xl font-bold mb-4">Invite Member</h2>
                         <form onSubmit={handleInvite} className="space-y-4">
-                            <input type="email" placeholder="Email" className="w-full p-2 border rounded" value={newMemberEmail} onChange={e => setNewMemberEmail(e.target.value)} required />
+                            <input type="email" placeholder="Email address" className="w-full p-3 border border-slate-200 rounded-lg" value={newMemberEmail} onChange={e => setNewMemberEmail(e.target.value)} required />
                             <div className="flex gap-2 justify-end pt-4">
-                                <button type="button" onClick={() => setIsInviteModalOpen(false)} className="px-4 py-2 text-slate-500">Cancel</button>
-                                <button type="submit" disabled={inviteLoading} className="px-4 py-2 bg-indigo-600 text-white rounded font-bold disabled:opacity-50">{inviteLoading ? 'Sending…' : 'Send Invite'}</button>
+                                <button type="button" onClick={() => { setIsInviteModalOpen(false); setNewMemberEmail(''); }} className="px-4 py-2 text-slate-500">Cancel</button>
+                                <button type="submit" disabled={inviteLoading} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold disabled:opacity-50">{inviteLoading ? 'Sending…' : 'Send Invite'}</button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {isCreateModalOpen && (
+                <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+                    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+                        <h2 className="text-xl font-bold mb-4">Create team</h2>
+                        <input type="text" placeholder="Team name" className="w-full p-3 border border-slate-200 rounded-lg mb-4" value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} />
+                        <div className="flex gap-2 justify-end">
+                            <button type="button" onClick={() => { setIsCreateModalOpen(false); setNewTeamName(''); }} className="px-4 py-2 text-slate-500">Cancel</button>
+                            <button type="button" onClick={() => handleCreateTeam()} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold">Create</button>
+                        </div>
                     </div>
                 </div>
             )}

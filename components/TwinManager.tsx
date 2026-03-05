@@ -1,54 +1,99 @@
 
 import React, { useState, useEffect } from 'react';
-import { Bot, Plus, Edit, Code, MessageSquare, Trash2, CheckCircle, Copy, Globe, Loader2, Image as ImageIcon } from 'lucide-react';
+import { Bot, Plus, Edit, Code, Trash2, Loader2, Image as ImageIcon } from 'lucide-react';
 import { ExpertPersona } from '../types';
 import { generatePersonaAvatar } from '../services/geminiService';
+import { expertPersonasApi, mapBackendPersonaToExpertPersona } from '../services/api';
 
-const STORAGE_KEY = 'knovatwin_expert_personas_v1';
+const isBackendTwinId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
 export const TwinManager: React.FC = () => {
     const [twins, setTwins] = useState<ExpertPersona[]>([]);
     const [isEditing, setIsEditing] = useState(false);
     const [currentTwin, setCurrentTwin] = useState<ExpertPersona | null>(null);
     const [isGeneratingAvatar, setIsGeneratingAvatar] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [saveError, setSaveError] = useState<string | null>(null);
 
     useEffect(() => {
         loadTwins();
     }, []);
 
     const loadTwins = () => {
-        try {
-            const stored = localStorage.getItem(STORAGE_KEY);
-            if (stored) {
-                setTwins(JSON.parse(stored));
-            }
-        } catch (e) {
-            console.error("Failed to load twins", e);
-        }
+        setLoading(true);
+        expertPersonasApi.list()
+            .then(({ data }) => {
+                if (Array.isArray(data)) {
+                    setTwins(data.map(mapBackendPersonaToExpertPersona));
+                }
+            })
+            .catch((e) => {
+                console.error("Failed to load twins", e);
+            })
+            .finally(() => setLoading(false));
     };
 
     const saveTwin = (twin: ExpertPersona) => {
-        const updatedTwins = currentTwin && twins.find(t => t.id === twin.id)
-            ? twins.map(t => t.id === twin.id ? twin : t)
-            : [...twins, twin];
-        
-        setTwins(updatedTwins);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedTwins));
-        setIsEditing(false);
-        setCurrentTwin(null);
+        setSaveError(null);
+        const payload = {
+            name: twin.name,
+            role: twin.role,
+            systemPrompt: twin.systemPrompt,
+            accentColor: twin.accentColor,
+            voiceName: twin.voiceName,
+            avatarUrl: twin.avatarUrl,
+            yearsExperience: twin.yearsExperience,
+        };
+        if (twin.id && isBackendTwinId(twin.id)) {
+            expertPersonasApi.update(twin.id, payload)
+                .then(({ data }) => {
+                    setTwins(prev => prev.map(t => t.id === twin.id ? mapBackendPersonaToExpertPersona(data) : t));
+                    setIsEditing(false);
+                    setCurrentTwin(null);
+                })
+                .catch((e) => {
+                    setSaveError(e?.message || 'Failed to update Twin');
+                });
+        } else {
+            expertPersonasApi.create(payload)
+                .then(({ data }) => {
+                    setTwins(prev => [mapBackendPersonaToExpertPersona(data), ...prev]);
+                    setIsEditing(false);
+                    setCurrentTwin(null);
+                })
+                .catch((e) => {
+                    setSaveError(e?.message || 'Failed to create Twin');
+                });
+        }
     };
 
     const handleDelete = (id: string) => {
-        if(confirm("Delete this Twin? This will break any existing embeds.")) {
-            const updated = twins.filter(t => t.id !== id);
-            setTwins(updated);
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        if (!confirm("Delete this Twin? This will break any existing embeds.")) return;
+        if (!isBackendTwinId(id)) {
+            setTwins(prev => prev.filter(t => t.id !== id));
+            if (currentTwin?.id === id) {
+                setIsEditing(false);
+                setCurrentTwin(null);
+            }
+            return;
         }
+        expertPersonasApi.delete(id)
+            .then(() => {
+                setTwins(prev => prev.filter(t => t.id !== id));
+                if (currentTwin?.id === id) {
+                    setIsEditing(false);
+                    setCurrentTwin(null);
+                }
+            })
+            .catch((e) => {
+                console.error("Failed to delete twin", e);
+                alert(e?.message || 'Failed to delete Twin');
+            });
     };
 
     const handleCreateNew = () => {
         const newTwin: ExpertPersona = {
-            id: `twin-${Date.now()}`,
+            id: '',
             name: '',
             role: '',
             systemPrompt: 'You are a helpful AI assistant.',
@@ -154,6 +199,7 @@ export const TwinManager: React.FC = () => {
                         <p className="text-xs text-slate-500 mt-2">Paste course content, FAQs, or personality guidelines here.</p>
                     </div>
 
+                    {saveError && <p className="text-sm text-red-600">{saveError}</p>}
                     <div className="flex justify-end pt-4 border-t border-slate-100">
                         <button 
                             onClick={() => saveTwin(currentTwin)}
@@ -187,7 +233,13 @@ export const TwinManager: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {twins.length === 0 && (
+                {loading && (
+                    <div className="col-span-full py-16 text-center text-slate-500">
+                        <Loader2 size={40} className="mx-auto mb-4 animate-spin text-indigo-500" />
+                        <p className="font-medium">Loading your Twins...</p>
+                    </div>
+                )}
+                {!loading && twins.length === 0 && (
                     <div className="col-span-full py-16 text-center text-slate-400 bg-white rounded-2xl border-2 border-dashed border-slate-200">
                         <Bot size={48} className="mx-auto mb-4 opacity-30" />
                         <p className="font-medium text-lg text-slate-600">No Twins Deployed</p>
@@ -195,7 +247,7 @@ export const TwinManager: React.FC = () => {
                     </div>
                 )}
 
-                {twins.map(twin => (
+                {!loading && twins.map(twin => (
                     <div key={twin.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow group relative">
                         <div className="flex items-center gap-4 mb-4">
                             <div className="w-14 h-14 rounded-full overflow-hidden border border-slate-100 bg-slate-50 shrink-0">

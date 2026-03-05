@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Send, User, Sparkles, Loader2, MessageSquare, AlertCircle, Mic, ChevronLeft } from 'lucide-react';
 import { ExpertPersona, ChatMessage } from '../types';
 import { getClient, EXPERT_PERSONAS } from '../services/geminiService';
+import { expertPersonasApi, mapBackendPersonaToExpertPersona } from '../services/api';
 import { GenerateContentResponse } from "@google/genai";
 import { LiveTutor } from './LiveTutor';
 
@@ -20,45 +21,46 @@ export const PublicAgentRenderer: React.FC<PublicAgentRendererProps> = ({ twinId
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const chatSessionRef = useRef<any>(null);
 
-    useEffect(() => {
-        let found = EXPERT_PERSONAS.find(p => p.id === twinId);
-        
-        if (!found) {
-            try {
-                const stored = localStorage.getItem('knovatwin_expert_personas_v1');
-                if (stored) {
-                    const customTwins = JSON.parse(stored);
-                    found = customTwins.find((p: any) => p.id === twinId);
+    const initPersonaAndChat = (p: ExpertPersona) => {
+        setPersona(p);
+        setError(null);
+        try {
+            const ai = getClient();
+            chatSessionRef.current = ai.chats.create({
+                model: 'gemini-3-flash-preview',
+                config: {
+                    systemInstruction: `You are ${p.name}, a ${p.role}. ${p.systemPrompt}. 
+                    CONSTRAINTS: You are interacting via a mobile app. Keep answers highly concise, use bullet points for readability, and focus on your specific subject expertise.`
                 }
-            } catch(e) {
-                console.error("Error loading twin", e);
-            }
+            });
+            setMessages([{
+                id: 'init',
+                role: 'model',
+                text: `Hello! I'm your ${p.role}, ${p.name}. How can I apply my expertise to help you on the go today?`,
+                timestamp: Date.now()
+            }]);
+        } catch (e) {
+            setError("Expertise Engine initialization failed.");
         }
+    };
 
+    useEffect(() => {
+        const found: ExpertPersona | undefined = EXPERT_PERSONAS.find(p => p.id === twinId);
         if (found) {
-            setPersona(found);
-            try {
-                const ai = getClient();
-                chatSessionRef.current = ai.chats.create({
-                    model: 'gemini-3-flash-preview',
-                    config: {
-                        systemInstruction: `You are ${found.name}, a ${found.role}. ${found.systemPrompt}. 
-                        CONSTRAINTS: You are interacting via a mobile app. Keep answers highly concise, use bullet points for readability, and focus on your specific subject expertise.`
-                    }
-                });
-                
-                setMessages([{
-                    id: 'init',
-                    role: 'model',
-                    text: `Hello! I'm your ${found.role}, ${found.name}. How can I apply my expertise to help you on the go today?`,
-                    timestamp: Date.now()
-                }]);
-            } catch (e) {
-                setError("Expertise Engine initialization failed.");
-            }
-        } else {
-            setError("Expert Twin not found in this node.");
+            initPersonaAndChat(found);
+            return;
         }
+        expertPersonasApi.list()
+            .then(({ data }) => {
+                if (!Array.isArray(data)) {
+                    setError("Expert Twin not found.");
+                    return;
+                }
+                const match = data.find((p: { id: string }) => p.id === twinId);
+                if (match) initPersonaAndChat(mapBackendPersonaToExpertPersona(match));
+                else setError("Expert Twin not found.");
+            })
+            .catch(() => setError("Expert Twin not found."));
     }, [twinId]);
 
     useEffect(() => {

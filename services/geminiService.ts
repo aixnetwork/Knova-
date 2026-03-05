@@ -554,8 +554,9 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
   - description: A compelling course description.
   - modules: An array of modules (4-8 modules). Each module must have:
     - title
-    - description (detailed summary of what will be covered)
-    - keyConcepts (array of strings, specific terms/ideas from the source)
+    - description (short summary of what the module covers)
+    - keyConcepts (array of strings)
+    - content (the FULL lesson body for this module: 2-5 paragraphs of teaching content in markdown, so learners see the same content every time without further generation)
   `;
   
   const response = await retryOperation(() => ai.models.generateContent({
@@ -575,9 +576,10 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
               properties: {
                 title: { type: Type.STRING },
                 description: { type: Type.STRING },
-                keyConcepts: { type: Type.ARRAY, items: { type: Type.STRING } }
+                keyConcepts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                content: { type: Type.STRING }
               },
-              required: ['title', 'description', 'keyConcepts']
+              required: ['title', 'description', 'keyConcepts', 'content']
             }
           }
         },
@@ -717,20 +719,112 @@ export const getOnboardingChat = (user: UserProfile) => {
 };
 
 // --- BICE Data ---
-export const generateBiceData = async (industry: string, strategy: string) => {
+export type BiceEmployee = {
+    id: string;
+    name: string;
+    role: string;
+    type: 'Employee' | 'Consultant';
+    department: string;
+    scores: Record<string, number>;
+    actionPlan: string;
+    targetDate: string;
+    status: 'Pending' | 'In Progress' | 'Completed';
+};
+
+export type BiceResult = {
+    departments: string[];
+    skills: string[];
+    employees: BiceEmployee[];
+    criticalAction?: string;
+};
+
+export const generateBiceData = async (industry: string, strategy: string): Promise<BiceResult | null> => {
     const ai = getClient();
-    const prompt = `Generate mock BICE (Business Impact) data for:
-    Industry: ${industry}
-    Strategy: ${strategy}
-    
-    Return JSON with departments, skills, and a list of employees with scores.`;
-    
+    const prompt = `You are a business impact analyst. Generate realistic BICE (Business Impact Correlation Engine) data.
+
+Industry: "${industry}"
+Strategic goal: "${strategy}"
+
+Return a JSON object with:
+1. departments: array of 4-6 department names (e.g. Sales, Engineering, HR, Marketing).
+2. skills: array of 4-5 skill names relevant to the strategy (e.g. AI Fluency, Data Analytics, Leadership, Compliance).
+3. employees: array of 6-12 people. Each must have: id (short unique string), name, role, type ("Employee" or "Consultant"), department (one of the departments), scores (object mapping each skill name to a number 0-100), actionPlan (one short sentence), targetDate (YYYY-MM-DD), status ("Pending", "In Progress", or "Completed").
+4. criticalAction: one sentence AI recommendation highlighting the biggest gap or priority.`;
+
     const response = await retryOperation(() => ai.models.generateContent({
         model: COURSE_MODEL,
         contents: prompt,
-        config: { responseMimeType: 'application/json' }
+        config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    departments: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    skills: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    employees: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                id: { type: Type.STRING },
+                                name: { type: Type.STRING },
+                                role: { type: Type.STRING },
+                                type: { type: Type.STRING },
+                                department: { type: Type.STRING },
+                                scores: { type: Type.OBJECT },
+                                actionPlan: { type: Type.STRING },
+                                targetDate: { type: Type.STRING },
+                                status: { type: Type.STRING },
+                            },
+                            required: ['id', 'name', 'role', 'type', 'department', 'scores', 'actionPlan', 'targetDate', 'status'],
+                        },
+                    },
+                    criticalAction: { type: Type.STRING },
+                },
+                required: ['departments', 'skills', 'employees'],
+            },
+        },
     })) as GenerateContentResponse;
-    return JSON.parse(cleanJson(response.text || '{}'));
+
+    const rawText = getResponseText(response);
+    const parsed = JSON.parse(cleanJson(rawText || '{}')) as Record<string, unknown>;
+
+    if (!Array.isArray(parsed.departments) || !Array.isArray(parsed.skills) || !Array.isArray(parsed.employees)) {
+        return null;
+    }
+
+    const departments = parsed.departments.filter((d): d is string => typeof d === 'string');
+    const skills = parsed.skills.filter((s): s is string => typeof s === 'string');
+    const criticalAction = typeof parsed.criticalAction === 'string' ? parsed.criticalAction : undefined;
+
+    const employees: BiceEmployee[] = (parsed.employees as Record<string, unknown>[]).map((emp, idx) => {
+        const type = emp.type === 'Consultant' ? 'Consultant' : 'Employee';
+        const status =
+            emp.status === 'Completed' ? 'Completed' :
+                emp.status === 'In Progress' ? 'In Progress' : 'Pending';
+        const scores: Record<string, number> = {};
+        if (emp.scores && typeof emp.scores === 'object' && !Array.isArray(emp.scores)) {
+            for (const [k, v] of Object.entries(emp.scores)) {
+                if (typeof v === 'number') scores[k] = v;
+            }
+        }
+        skills.forEach(s => {
+            if (scores[s] === undefined) scores[s] = Math.min(100, Math.max(0, Math.round(Math.random() * 80)));
+        });
+        return {
+            id: typeof emp.id === 'string' ? emp.id : `e${idx + 1}`,
+            name: typeof emp.name === 'string' ? emp.name : 'Unknown',
+            role: typeof emp.role === 'string' ? emp.role : 'Staff',
+            type,
+            department: typeof emp.department === 'string' && departments.includes(emp.department) ? emp.department : departments[0] || 'General',
+            scores,
+            actionPlan: typeof emp.actionPlan === 'string' ? emp.actionPlan : 'Review learning path',
+            targetDate: typeof emp.targetDate === 'string' ? emp.targetDate : '2024-12-31',
+            status,
+        };
+    });
+
+    return { departments, skills, employees, criticalAction };
 };
 
 // --- Assessment ---
