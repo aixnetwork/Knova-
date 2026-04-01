@@ -1,32 +1,32 @@
 
 import React, { useEffect, useState } from 'react';
-import { 
-  Trophy, 
-  Database, 
-  X, 
-  CheckCircle, 
-  BookOpen, 
-  Activity, 
-  Clock, 
-  Flame, 
-  Target, 
-  Plus, 
-  Users, 
-  TrendingUp, 
-  AlertTriangle, 
-  Play, 
-  Sparkles,
-  Lightbulb,
-  ShieldCheck,
-  Bot,
-  CloudLightning,
-  RefreshCw,
-  Globe,
-  HelpCircle,
-  TrendingDown,
-  Calendar
+import {
+    Trophy,
+    Database,
+    X,
+    CheckCircle,
+    BookOpen,
+    Activity,
+    Clock,
+    Flame,
+    Target,
+    Plus,
+    Users,
+    TrendingUp,
+    AlertTriangle,
+    Play,
+    Sparkles,
+    Lightbulb,
+    ShieldCheck,
+    Bot,
+    CloudLightning,
+    RefreshCw,
+    Globe,
+    HelpCircle,
+    TrendingDown,
+    Calendar
 } from 'lucide-react';
-import { Course, UserStats, UserProfile, UserRole, SubscriptionTier, AppView } from '../types';
+import { Course, UserStats, UserProfile, UserRole, SubscriptionTier, AppView, CourseStatus } from '../types';
 import { CourseCard } from './CourseCard';
 import { OnboardingAssistant } from './OnboardingAssistant';
 import { generateDailyInsight } from '../services/geminiService';
@@ -54,12 +54,16 @@ interface DashboardViewProps {
     onSetCourseToEdit: (course: Course | null) => void;
 }
 
-export const DashboardView: React.FC<DashboardViewProps> = ({ 
-    user, 
-    courses, 
-    stats, 
-    storageStatus, 
-    justPublishedCourse, 
+let twinCountCache: number | null = null;
+let twinCountInFlight: Promise<number> | null = null;
+const dailyInsightInFlight = new Map<string, Promise<string>>();
+
+export const DashboardView: React.FC<DashboardViewProps> = ({
+    user,
+    courses,
+    stats,
+    storageStatus,
+    justPublishedCourse,
     onClearPublished,
     onSelectCourse,
     onNavigate,
@@ -81,46 +85,62 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     // Load twin count from API for checklist
     const [twinCount, setTwinCount] = useState(0);
     useEffect(() => {
-        expertPersonasApi.list()
-            .then(({ data }) => setTwinCount(Array.isArray(data) ? data.length : 0))
-            .catch(() => {});
+        if (typeof twinCountCache === 'number') {
+            setTwinCount(twinCountCache);
+            return;
+        }
+
+        if (!twinCountInFlight) {
+            twinCountInFlight = expertPersonasApi.list()
+                .then(({ data }) => {
+                    const count = Array.isArray(data) ? data.length : 0;
+                    twinCountCache = count;
+                    return count;
+                })
+                .catch(() => 0)
+                .finally(() => {
+                    twinCountInFlight = null;
+                });
+        }
+
+        twinCountInFlight.then((count) => setTwinCount(count));
     }, []);
 
     const isSuperAdmin = user?.email === 'knovaadmin' || user?.name?.toLowerCase() === 'knova admin' || user?.name?.toLowerCase() === 'knovaadmin';
     const isCompanyUser = user?.tier === SubscriptionTier.COMPANY || user?.role === UserRole.ADMIN;
-    
-    const hasCreatorAccess = 
-        user?.tier === SubscriptionTier.EXPERT || 
+
+    const hasCreatorAccess =
+        user?.tier === SubscriptionTier.EXPERT ||
         user?.role === UserRole.FACILITATOR ||
-        user?.isCreatorMode || 
-        isCompanyUser || 
+        user?.isCreatorMode ||
+        isCompanyUser ||
         isSuperAdmin;
 
     const safeCourses = (courses || []).filter(c => c && c.id);
     const sortedCourses = [...safeCourses].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    
+
     const visibleCourses = sortedCourses.filter(c => {
         if (!c) return false;
         if (isSuperAdmin || isCompanyUser) return true;
         if (user?.name && c.authorName === user.name) return true;
-        if (hasCreatorAccess && c.status !== 'ARCHIVED') return true;
+        if (hasCreatorAccess && c.status !== CourseStatus.REJECTED) return true;
         if (c.isDefault) return true;
         if (c.status === 'PUBLISHED') return true;
-        return false; 
+        return false;
     });
 
-    const myCreations = visibleCourses.filter(c => 
-        (c.id && c.id.startsWith('course-')) || 
+    const myCreations = visibleCourses.filter(c =>
+        (c.id && c.id.startsWith('course-')) ||
         (user?.name && c.authorName === user.name) ||
         (hasCreatorAccess && c.status === 'DRAFT')
     );
-    
+
     const otherCourses = visibleCourses.filter(c => !myCreations.includes(c));
     const continueCourse = visibleCourses.find(c => c.progress > 0 && c.progress < 100) || visibleCourses[0];
 
     let displayCreations = [...myCreations];
     let displayOthers = [...otherCourses];
-  
+
     if (courseSearch.trim()) {
         const term = courseSearch.toLowerCase();
         const matches = (c: Course) => (c.title || '').toLowerCase().includes(term);
@@ -131,24 +151,39 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     const [dailyInsight, setDailyInsight] = useState<string | null>(null);
 
     useEffect(() => {
+        let cancelled = false;
         const loadInsight = async () => {
             const today = new Date().toDateString();
             const storedKey = `knovatwin_insight_${today}`;
             const storedInsight = localStorage.getItem(storedKey);
 
             if (storedInsight) {
-                setDailyInsight(storedInsight);
+                if (!cancelled) setDailyInsight(storedInsight);
             } else if (user && continueCourse && continueCourse.topic) {
                 try {
-                    const insight = await generateDailyInsight(user.name, continueCourse.topic);
+                    const insightKey = `${today}:${user.name}:${continueCourse.topic}`;
+                    if (!dailyInsightInFlight.has(insightKey)) {
+                        dailyInsightInFlight.set(
+                            insightKey,
+                            generateDailyInsight(user.name, continueCourse.topic)
+                                .finally(() => dailyInsightInFlight.delete(insightKey))
+                        );
+                    }
+
+                    const insight = await dailyInsightInFlight.get(insightKey)!;
+                    if (cancelled) return;
                     setDailyInsight(insight);
                     localStorage.setItem(storedKey, insight);
                 } catch (e: any) {
-                    setDailyInsight("Consistency is key. Keep learning!"); 
+                    if (!cancelled) setDailyInsight("Consistency is key. Keep learning!");
                 }
             }
         };
         loadInsight();
+
+        return () => {
+            cancelled = true;
+        };
     }, [user, continueCourse]);
 
     const getGreeting = () => {
@@ -172,7 +207,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             </h1>
                             {isSuperAdmin && (
                                 <span className="bg-indigo-600 text-white text-[10px] font-bold px-2 py-1 rounded-full flex items-center gap-1 uppercase tracking-wider shadow-sm">
-                                    <ShieldCheck size={12}/> Super Admin
+                                    <ShieldCheck size={12} /> Super Admin
                                 </span>
                             )}
                         </div>
@@ -217,35 +252,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             <p className="text-emerald-100 text-sm">Successfully synced to the decentralized hub.</p>
                         </div>
                     </div>
-                    <button onClick={onClearPublished} className="text-white hover:bg-white/20 p-2 rounded-full transition-colors"><X size={20}/></button>
+                    <button onClick={onClearPublished} className="text-white hover:bg-white/20 p-2 rounded-full transition-colors"><X size={20} /></button>
                 </div>
             )}
 
             {/* NEURAL ANALYTICS HUB (Replaces top box) */}
-            <DashboardQuickStart 
-                onNavigate={onNavigate} 
-                onStartTour={() => window.dispatchEvent(new CustomEvent('relaunch-tour'))} 
+            <DashboardQuickStart
+                onNavigate={onNavigate}
+                onStartTour={() => window.dispatchEvent(new CustomEvent('relaunch-tour'))}
             />
 
             <div className="grid grid-cols-12 gap-6 lg:gap-8">
                 <div className="col-span-12 xl:col-span-9 space-y-8">
-                    
+
                     {/* Mastery Card */}
                     <div className="w-full">
                         <div className="bg-white rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-lg border border-slate-100 flex flex-col justify-center min-h-[300px] group hover:shadow-xl transition-all">
                             <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-50 rounded-full blur-[100px] opacity-50 -mr-12 -mt-12 group-hover:bg-indigo-100 transition-colors"></div>
-                            
+
                             <div className="relative z-10 flex flex-col h-full">
                                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-4 w-fit">
                                     <CloudLightning size={12} /> Resume Learning
                                 </div>
-                                
+
                                 {continueCourse ? (
                                     <div className="flex-1 flex flex-col justify-center">
                                         <h2 className="text-3xl md:text-4xl font-extrabold mb-3 tracking-tight text-slate-900 leading-tight">
                                             {continueCourse.title}
                                         </h2>
-                                        
+
                                         <div className="max-w-md mb-6">
                                             <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
                                                 <span>Session Progress</span>
@@ -256,7 +291,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                             </div>
                                         </div>
 
-                                        <button 
+                                        <button
                                             onClick={() => onSelectCourse(continueCourse.id)}
                                             className="bg-slate-900 text-white px-8 py-3.5 rounded-xl font-bold hover:bg-slate-800 transition-all flex items-center gap-2 shadow-lg w-full md:w-fit justify-center"
                                         >
@@ -282,10 +317,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                                     {displayCreations.map(course => (
-                                        <CourseCard 
+                                        <CourseCard
                                             key={course.id}
-                                            course={course} 
-                                            onClick={() => onSelectCourse(course.id)} 
+                                            course={course}
+                                            onClick={() => onSelectCourse(course.id)}
                                             onUpdateThumbnail={(url) => onUpdateCourse(course.id, { thumbnailUrl: url })}
                                             onEdit={hasCreatorAccess ? () => onEditCourse(course.id) : undefined}
                                             onDelete={hasCreatorAccess ? () => onDeleteCourse(course.id) : undefined}
@@ -302,9 +337,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             </div>
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                                 {displayOthers.map(course => (
-                                    <CourseCard 
+                                    <CourseCard
                                         key={course.id}
-                                        course={course} 
+                                        course={course}
                                         onClick={() => onSelectCourse(course.id)}
                                         onUpdateThumbnail={(url) => onUpdateCourse(course.id, { thumbnailUrl: url })}
                                     />
@@ -313,7 +348,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </div>
                     </div>
                 </div>
-                
+
                 {/* Sidebar (Cleaned Up) */}
                 <div className="hidden xl:block xl:col-span-3 space-y-6">
                     <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm sticky top-6">
@@ -327,38 +362,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             const totalModules = (courses || []).reduce((acc, c) => acc + (c.modules?.length || 0), 0);
                             const progressPct = totalModules > 0 ? Math.round((stats.completedModules / totalModules) * 100) : 0;
                             return (
-                        <div className="space-y-4">
-                             <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Progress</p>
-                                <p className="text-sm font-bold text-slate-900">{stats.completedModules} of {totalModules} modules</p>
-                                <div className="mt-2 w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                                    <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progressPct}%` }} />
-                                </div>
-                             </div>
+                                <div className="space-y-4">
+                                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Progress</p>
+                                        <p className="text-sm font-bold text-slate-900">{stats.completedModules} of {totalModules} modules</p>
+                                        <div className="mt-2 w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                            <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${progressPct}%` }} />
+                                        </div>
+                                    </div>
 
-                             <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Active Streak</p>
-                                <div className="flex items-center gap-2">
-                                    <Flame size={16} className="text-orange-500" />
-                                    <p className="text-sm font-bold text-slate-900">{stats.streakDays} Day Learning Streak</p>
-                                </div>
-                             </div>
+                                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Active Streak</p>
+                                        <div className="flex items-center gap-2">
+                                            <Flame size={16} className="text-orange-500" />
+                                            <p className="text-sm font-bold text-slate-900">{stats.streakDays} Day Learning Streak</p>
+                                        </div>
+                                    </div>
 
-                             <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Mastery</p>
-                                <div className="flex items-center gap-2">
-                                    <Target size={16} className="text-indigo-500" />
-                                    <p className="text-sm font-bold text-slate-900">{stats.masteryScore}% Mastery Score</p>
+                                    <div className="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Mastery</p>
+                                        <div className="flex items-center gap-2">
+                                            <Target size={16} className="text-indigo-500" />
+                                            <p className="text-sm font-bold text-slate-900">{stats.masteryScore}% Mastery Score</p>
+                                        </div>
+                                    </div>
                                 </div>
-                             </div>
-                        </div>
                             );
                         })()}
 
                         <div className="pt-6 mt-6 border-t border-slate-100">
                             <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
                                 <p className="text-[10px] font-bold text-indigo-800 uppercase tracking-widest mb-1 flex items-center gap-1">
-                                    <Sparkles size={10}/> Weekly Insight
+                                    <Sparkles size={10} /> Weekly Insight
                                 </p>
                                 <p className="text-[11px] text-indigo-700 leading-relaxed italic">
                                     {dailyInsight || "Your neural retention is 14% higher than the global average today. Focus on deep work sessions."}
@@ -368,7 +403,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </div>
                 </div>
             </div>
-            
+
             {user && <OnboardingAssistant user={user} />}
         </div>
     );

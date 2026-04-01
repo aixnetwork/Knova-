@@ -76,9 +76,7 @@ export const PublicAgentRenderer: React.FC<PublicAgentRendererProps> = ({ twinId
 
         try {
             const result: GenerateContentResponse = await chatSessionRef.current.sendMessage({ message: userText });
-            if (result.text) {
-                setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'model', text: result.text, timestamp: Date.now() }]);
-            }
+            setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'model', text: result.text ?? "I couldn't generate a response. Please try again.", timestamp: Date.now() }]);
         } catch (e) {
             setMessages(prev => [...prev, { id: `err-${Date.now()}`, role: 'model', text: "Connection issues. Please retry.", timestamp: Date.now() }]);
         } finally {

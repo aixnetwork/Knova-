@@ -44,12 +44,13 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ initialTeamId })
         setLoading(true);
         setError(null);
         teamsApi.list()
-            .then((res: { data?: Team[] }) => {
+            .then((res) => {
                 const list = Array.isArray(res.data) ? res.data : [];
-                setTeams(list);
+                setTeams(list as Team[]);
                 setSelectedTeam((prev) => {
-                    if (list.length === 0) return null;
-                    const next = list.find((t) => t.id === prev?.id) ?? list[0];
+                    const teamsList = list as Team[];
+                    if (teamsList.length === 0) return null;
+                    const next = teamsList.find((t) => t.id === prev?.id) ?? teamsList[0];
                     return next ?? null;
                 });
             })
@@ -98,8 +99,8 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ initialTeamId })
         const teamName = (name || newTeamName || 'My Team').trim() || 'My Team';
         setError(null);
         teamsApi.create(teamName)
-            .then((res: { data?: Team }) => {
-                const created = res?.data;
+            .then((res) => {
+                const created = res?.data as Team | undefined;
                 setIsCreateModalOpen(false);
                 setNewTeamName('');
                 loadTeams();
@@ -114,14 +115,18 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ initialTeamId })
         setInviteLoading(true);
         setError(null);
         teamsApi.invite(selectedTeam.id, newMemberEmail.trim())
-            .then((res: { data?: { emailSent?: boolean } }) => {
+            .then((res) => {
+                const inviteData = res?.data as { emailSent?: boolean } | undefined;
                 setIsInviteModalOpen(false);
                 setNewMemberEmail('');
                 setShowSuccess(true);
-                setSuccessMessage(res?.data?.emailSent === false ? 'Invitation created. (Email could not be sent.)' : 'Invitation sent by email!');
+                setSuccessMessage(inviteData?.emailSent === false ? 'Invitation created. (Email could not be sent.)' : 'Invitation sent by email!');
                 setTimeout(() => { setShowSuccess(false); setSuccessMessage('Invitation sent!'); }, 4000);
                 loadTeams();
-                teamsApi.getById(selectedTeam.id).then((r: { data?: Team }) => r.data && setSelectedTeam(r.data)).catch(() => {});
+                teamsApi.getById(selectedTeam.id).then((r) => {
+                    const team = r.data as Team | undefined;
+                    if (team) setSelectedTeam(team);
+                }).catch(() => {});
             })
             .catch((err: { message?: string }) => setError(err?.message || 'Invite failed'))
             .finally(() => setInviteLoading(false));
@@ -133,7 +138,10 @@ export const TeamManagement: React.FC<TeamManagementProps> = ({ initialTeamId })
         teamsApi.removeMember(selectedTeam.id, id)
             .then(() => {
                 loadTeams();
-                teamsApi.getById(selectedTeam.id).then((r: { data?: Team }) => r.data && setSelectedTeam(r.data)).catch(() => {});
+                teamsApi.getById(selectedTeam.id).then((r) => {
+                    const team = r.data as Team | undefined;
+                    if (team) setSelectedTeam(team);
+                }).catch(() => {});
             })
             .catch((err: { message?: string }) => setError(err?.message || 'Failed to remove member'));
     };

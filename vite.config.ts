@@ -5,7 +5,13 @@ import react from '@vitejs/plugin-react'
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   // Load env file based on `mode` in the current working directory (empty prefix = load all vars)
-  const env = loadEnv(mode, (process as any).cwd(), '');
+  let env: Record<string, string> = {};
+  try {
+    env = loadEnv(mode, (process as any).cwd(), '');
+  } catch {
+    // In restricted environments, reading .env can fail (EPERM). Fall back to process env.
+    env = ((typeof process !== 'undefined' && process.env) ? process.env : {}) as Record<string, string>;
+  }
   // Expose Gemini key to client: support both GEMINI_API_KEY and VITE_GEMINI_API_KEY in .env.local
   const geminiKey = env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
   return {
