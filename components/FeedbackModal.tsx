@@ -1,7 +1,7 @@
-
 import React, { useState } from 'react';
 import { X, Send, AlertTriangle, Lightbulb, Wrench, CheckCircle, Loader2 } from 'lucide-react';
-import { FeedbackType, FeedbackItem, UserProfile } from '../types';
+import { FeedbackType, UserProfile } from '../types';
+import { feedbackApi } from '../services/api';
 
 interface FeedbackModalProps {
     isOpen: boolean;
@@ -14,6 +14,7 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, u
     const [message, setMessage] = useState('');
     const [isSending, setIsSending] = useState(false);
     const [isSuccess, setIsSuccess] = useState(false);
+    const [error, setError] = useState<string | null>(null);
 
     if (!isOpen) return null;
 
@@ -22,47 +23,29 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, u
         if (!message.trim()) return;
 
         setIsSending(true);
-
-        // Simulate network delay
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        setError(null);
 
         try {
-            const newFeedback: FeedbackItem = {
-                id: `fb-${Date.now()}`,
-                userId: user?.id || 'anonymous',
-                userName: user?.name || 'Guest',
-                userEmail: user?.email || 'anonymous@user.com',
+            await feedbackApi.create({
                 type,
-                message,
-                timestamp: Date.now(),
-                status: 'NEW',
-                userAgent: navigator.userAgent
-            };
-
-            // Save to Local Storage (Mock Backend)
-            const existingFeedbackStr = localStorage.getItem('knovatwin_feedback');
-            const existingFeedback: FeedbackItem[] = existingFeedbackStr ? JSON.parse(existingFeedbackStr) : [];
-            const updatedFeedback = [newFeedback, ...existingFeedback];
-            localStorage.setItem('knovatwin_feedback', JSON.stringify(updatedFeedback));
-
-            // Log email simulation
-            console.log(`[Email Service]: Sending feedback to support@aixnetwork.net from ${newFeedback.userEmail}`);
-            console.log(`[Email Service]: Copy sent to SuperAdmin.`);
-
+                message: message.trim(),
+                userName: user?.name || 'Guest',
+                userEmail: user?.email || 'guest@example.com',
+            });
             setIsSuccess(true);
             setTimeout(() => {
                 onClose();
-                // Reset state after close animation
                 setTimeout(() => {
                     setIsSuccess(false);
                     setMessage('');
                     setType(FeedbackType.IMPROVEMENT);
                     setIsSending(false);
+                    setError(null);
                 }, 300);
-            }, 2500);
-
-        } catch (error) {
-            console.error("Feedback error", error);
+            }, 2000);
+        } catch (err: unknown) {
+            const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: string }).message) : 'Failed to send feedback.';
+            setError(msg);
             setIsSending(false);
         }
     };
@@ -151,6 +134,9 @@ export const FeedbackModal: React.FC<FeedbackModalProps> = ({ isOpen, onClose, u
                                 <div className="text-xs text-slate-400">
                                     Ticket ID: #FB-{Date.now().toString().substr(-6)}
                                 </div>
+                                {error && (
+                                    <p className="text-red-600 text-sm">{error}</p>
+                                )}
                                 <button
                                     type="submit"
                                     disabled={isSending || !message.trim()}

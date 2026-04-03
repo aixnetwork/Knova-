@@ -42,7 +42,7 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ courses }) => {
       // Module/Concept Nodes
       course.modules.forEach((mod) => {
         // Only add a few key concepts to avoid clutter
-        const concept = mod.keyConcepts[0]; 
+        const concept = mod.keyConcepts?.[0];
         if(concept) {
             const nodeId = `${course.topic}-${concept}`;
             nodes.push({ id: concept, group: 2, radius: 10 });

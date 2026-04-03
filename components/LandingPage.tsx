@@ -46,6 +46,8 @@ import {
 } from 'lucide-react';
 import { UserProfile, UserRole, SubscriptionTier, AppView } from '../types';
 import { Logo } from './Logo';
+import { authApi, setToken } from '../services/api';
+import { mapAuthUserToProfile } from '../services/authHelpers';
 
 interface LandingPageProps {
   onEnterApp: (user: UserProfile) => void;
@@ -106,19 +108,30 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onNavigate
   const [regOrgName, setRegOrgName] = useState('');
   const [regRevenue, setRegRevenue] = useState('');
   const [regEmployees, setRegEmployees] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
-  const handleAuth = (e: React.FormEvent) => {
+  // Capture ?ref=userId for referral tracking (persist so it survives navigation)
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get('ref');
+    if (ref) sessionStorage.setItem('knovatwin_ref', ref);
+  }, []);
+
+  const handleAuth = async (e: React.FormEvent) => {
       e.preventDefault();
       const normalizedEmail = regEmail.trim().toLowerCase();
-      
-      // Super Admin Check
+      const password = regPassword.trim();
+      setAuthError(null);
+
+      // Super Admin bypass (demo only – no backend)
       if (normalizedEmail === 'knovaadmin' || (regName && regName.toLowerCase() === 'knovaadmin')) {
           onEnterApp({
               id: `user-godmode-${Date.now()}`,
               name: 'Knova Admin',
               email: normalizedEmail,
-              role: UserRole.ADMIN,       
-              tier: SubscriptionTier.COMPANY, 
+              role: UserRole.ADMIN,
+              tier: SubscriptionTier.COMPANY,
               avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=knovaadmin`,
               isCreatorMode: true,
               title: "System Administrator",
@@ -127,44 +140,39 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onNavigate
           return;
       }
 
-      let finalRole = UserRole.LEARNER;
-      let finalTier = SubscriptionTier.FREE;
-      let finalTitle = regJobTitle;
-      let finalIndustry = regIndustry;
-      let finalInterests = regInterest ? [regInterest] : [];
-      let finalBio = "";
-
-      if (regRoleType === 'COMPANY') {
-          finalRole = UserRole.ADMIN; 
-          finalTier = SubscriptionTier.COMPANY; 
-          finalTitle = "Company Admin";
-          finalBio = `Org: ${regOrgName || 'My Company'}`;
-          finalIndustry = regIndustry || 'General';
-      } else if (regRoleType === 'EXPERT') {
-          finalRole = UserRole.FACILITATOR;
-          finalTier = SubscriptionTier.EXPERT; 
-          finalTitle = regExpertise ? `Expert in ${regExpertise}` : regJobTitle;
-          finalBio = `Expertise: ${regExpertise}`;
-          finalIndustry = regIndustry || 'General';
-      } else {
-          finalRole = UserRole.LEARNER;
-          finalTier = SubscriptionTier.FREE;
-          finalBio = `Status: ${regLearnerStatus}`;
+      if (!password) {
+          setAuthError('Password is required.');
+          return;
+      }
+      if (!isLoginMode && password.length < 6) {
+          setAuthError('Password must be at least 6 characters.');
+          return;
+      }
+      if (!isLoginMode && !regName.trim()) {
+          setAuthError('Name is required for sign up.');
+          return;
       }
 
-      onEnterApp({
-          id: `user-${Date.now()}`,
-          name: regName || normalizedEmail.split('@')[0] || 'New User',
-          email: normalizedEmail,
-          role: finalRole, 
-          tier: finalTier, 
-          avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${regName || normalizedEmail}`,
-          isCreatorMode: finalRole === UserRole.FACILITATOR || finalRole === UserRole.ADMIN,
-          title: finalTitle || 'Member',
-          industry: finalIndustry || 'General',
-          interests: finalInterests,
-          bio: finalBio
-      });
+      setAuthLoading(true);
+      try {
+          if (isLoginMode) {
+              const { data } = await authApi.login(normalizedEmail, password);
+              setToken(data.token);
+              onEnterApp(mapAuthUserToProfile(data.user));
+          } else {
+              const ref = sessionStorage.getItem('knovatwin_ref') || undefined;
+              const role = regRoleType === 'COMPANY' ? 'ADMIN' : regRoleType === 'EXPERT' ? 'FACILITATOR' : undefined;
+              const { data } = await authApi.register(normalizedEmail, password, regName.trim() || normalizedEmail.split('@')[0] || 'User', ref || undefined, role);
+              if (ref) sessionStorage.removeItem('knovatwin_ref');
+              setToken(data.token);
+              onEnterApp(mapAuthUserToProfile(data.user));
+          }
+      } catch (err: unknown) {
+          const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: string }).message) : 'Login failed. Try again.';
+          setAuthError(msg);
+      } finally {
+          setAuthLoading(false);
+      }
   };
 
   const scrollToTop = () => {
@@ -345,8 +353,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onNavigate
                             <input type="text" required placeholder={isLoginMode ? "Email / Username" : "Email Address"} value={regEmail} onChange={(e) => setRegEmail(e.target.value)} className="w-full px-4 py-3 bg-black/20 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white placeholder-slate-500 text-sm outline-none transition-all focus:bg-black/40" />
                             <input type="password" required placeholder="Password" value={regPassword} onChange={(e) => setRegPassword(e.target.value)} className="w-full px-4 py-3 bg-black/20 border border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500 text-white placeholder-slate-500 text-sm outline-none transition-all focus:bg-black/40" />
 
-                            <button type="submit" className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl transition-colors shadow-lg mt-4 text-base active:scale-95 transform">
-                                {isLoginMode ? `Log In as ${regRoleType.charAt(0) + regRoleType.slice(1).toLowerCase()}` : 'Start Creating Free'}
+                            {authError && (
+                                <p className="text-red-400 text-sm mt-1">{authError}</p>
+                            )}
+                            <button type="submit" disabled={authLoading} className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold rounded-xl transition-colors shadow-lg mt-4 text-base active:scale-95 transform">
+                                {authLoading ? (isLoginMode ? 'Signing in…' : 'Creating account…') : (isLoginMode ? `Log In as ${regRoleType.charAt(0) + regRoleType.slice(1).toLowerCase()}` : 'Start Creating Free')}
                             </button>
                         </form>
                         <div className="text-center mt-6">

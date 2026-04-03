@@ -1,60 +1,112 @@
 
 import React, { useState, useEffect } from 'react';
-import { 
-    ClipboardCheck, 
-    Plus, 
-    ArrowRight, 
-    Users, 
-    Calendar, 
-    CheckCircle, 
-    Clock, 
-    BarChart3, 
-    Brain, 
+import {
+    ClipboardCheck,
+    Plus,
+    ArrowRight,
+    Users,
+    Calendar,
+    CheckCircle,
+    Clock,
+    BarChart3,
+    Brain,
     AlertCircle,
-    User,
-    Loader2
+    Loader2,
+    X,
 } from 'lucide-react';
-import { 
-    Radar, 
-    RadarChart, 
-    PolarGrid, 
-    PolarAngleAxis, 
-    PolarRadiusAxis, 
+import {
+    Radar,
+    RadarChart,
+    PolarGrid,
+    PolarAngleAxis,
+    PolarRadiusAxis,
     ResponsiveContainer,
-    Tooltip
+    Tooltip,
 } from 'recharts';
-import { ExternalAssessment, ExpertInsight, UserProfile } from '../types';
+import { ExternalAssessment, UserProfile } from '../types';
 import { synthesizeAssessmentReport } from '../services/geminiService';
-
-// --- MOCK DATA ---
-const MOCK_ASSESSMENTS: ExternalAssessment[] = [];
+import { assessmentsApi, mapAssessmentResToExternal } from '../services/api';
 
 interface ExternalAssessmentViewProps {
     user: UserProfile | null;
+    /** When opening from URL e.g. /assessments/:id */
+    initialAssessmentId?: string | null;
 }
 
-export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ user }) => {
-    const [assessments, setAssessments] = useState<ExternalAssessment[]>(MOCK_ASSESSMENTS);
-    const [activeAssessmentId, setActiveAssessmentId] = useState<string | null>(null);
+export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ user, initialAssessmentId }) => {
+    const [assessments, setAssessments] = useState<ExternalAssessment[]>([]);
+    const [activeAssessmentId, setActiveAssessmentId] = useState<string | null>(initialAssessmentId ?? null);
+    const [loading, setLoading] = useState(true);
     const [isSynthesizing, setIsSynthesizing] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [showAddInsight, setShowAddInsight] = useState(false);
+    const [insightForm, setInsightForm] = useState({
+        summary: '',
+        recommendations: '',
+        strategyScore: 70,
+        executionScore: 70,
+        technologyScore: 70,
+        peopleScore: 70,
+        riskScore: 70,
+    });
+    const [addingInsight, setAddingInsight] = useState(false);
 
-    const activeAssessment = assessments.find(a => a.id === activeAssessmentId);
+    const activeAssessment = assessments.find((a) => a.id === activeAssessmentId);
+
+    const loadAssessments = () => {
+        setError(null);
+        assessmentsApi
+            .list()
+            .then((res) => {
+                const list = Array.isArray(res?.data) ? res.data : [];
+                setAssessments(list.map((a) => mapAssessmentResToExternal(a as import('../services/api').AssessmentRes)));
+            })
+            .catch((e) => setError(e?.message || 'Failed to load assessments'))
+            .finally(() => setLoading(false));
+    };
+
+    useEffect(() => {
+        loadAssessments();
+    }, []);
+
+    useEffect(() => {
+        if (initialAssessmentId && assessments.some((a) => a.id === initialAssessmentId)) {
+            setActiveAssessmentId(initialAssessmentId);
+        }
+    }, [initialAssessmentId, assessments]);
+
+    const refreshActiveAssessment = () => {
+        if (!activeAssessmentId) return;
+        assessmentsApi
+            .getById(activeAssessmentId)
+            .then((res) => {
+                const data = res?.data as import('../services/api').AssessmentRes | undefined;
+                if (data) {
+                    setAssessments((prev) =>
+                        prev.map((a) => (a.id === activeAssessmentId ? mapAssessmentResToExternal(data) : a))
+                    );
+                }
+            })
+            .catch(() => {});
+    };
 
     const handleCreateAssessment = () => {
-        const newAssessment: ExternalAssessment = {
-            id: `aud-${Date.now()}`,
-            title: 'New Strategic Review',
-            companyName: user?.industry || 'My Company',
-            status: 'OPEN',
-            createdDate: new Date().toISOString().split('T')[0],
-            deadline: new Date(Date.now() + 12096e5).toISOString().split('T')[0], // +2 weeks
-            description: 'A new evaluation initiated by ' + user?.name,
-            invitedExperts: 0,
-            insights: []
-        };
-        setAssessments([newAssessment, ...assessments]);
-        setActiveAssessmentId(newAssessment.id);
+        setError(null);
+        const title = 'New Strategic Review';
+        const companyName = user?.industry || 'My Company';
+        const deadline = new Date(Date.now() + 12096e5).toISOString().split('T')[0];
+        const description = 'A new evaluation initiated by ' + (user?.name || 'Admin');
+        assessmentsApi
+            .create({ title, companyName, status: 'OPEN', deadline, description })
+            .then((res) => {
+                const data = res?.data as import('../services/api').AssessmentRes | undefined;
+                if (data) {
+                    const mapped = mapAssessmentResToExternal(data);
+                    setAssessments((prev) => [mapped, ...prev]);
+                    setActiveAssessmentId(mapped.id);
+                }
+            })
+            .catch((e) => setError(e?.message || 'Failed to create assessment'));
     };
 
     const handleSynthesize = async () => {
@@ -63,18 +115,45 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
         setError(null);
         try {
             const report = await synthesizeAssessmentReport(activeAssessment);
-            const updated = assessments.map(a => a.id === activeAssessment.id ? { ...a, aiSynthesis: report, status: 'COMPLETED' as const } : a);
+            await assessmentsApi.update(activeAssessment.id, { status: 'COMPLETED', aiSynthesis: report });
+            const updated = assessments.map((a) => (a.id === activeAssessment.id ? { ...a, aiSynthesis: report, status: 'COMPLETED' as const } : a));
             setAssessments(updated);
-        } catch (e: any) {
+        } catch (e: unknown) {
             console.error(e);
-            if (e.message?.includes('429') || e.message?.includes('quota') || e.message?.includes('Too Many Requests')) {
-                setError("High traffic volume (Rate Limit). Please wait a moment and try again.");
+            const msg = e instanceof Error ? e.message : '';
+            if (msg.includes('429') || msg.includes('quota') || msg.includes('Too Many Requests')) {
+                setError('High traffic volume (Rate Limit). Please wait a moment and try again.');
             } else {
-                setError("Failed to generate report. The AI service might be busy.");
+                setError('Failed to generate report. The AI service might be busy.');
             }
         } finally {
             setIsSynthesizing(false);
         }
+    };
+
+    const handleAddInsight = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!activeAssessmentId || !user) return;
+        const recs = insightForm.recommendations.trim().split('\n').filter(Boolean);
+        setAddingInsight(true);
+        setError(null);
+        assessmentsApi
+            .addInsight(activeAssessmentId, {
+                summary: insightForm.summary.trim() || 'No summary provided.',
+                recommendations: recs.length ? recs : ['Follow up with team.'],
+                strategyScore: Math.min(100, Math.max(0, insightForm.strategyScore)),
+                executionScore: Math.min(100, Math.max(0, insightForm.executionScore)),
+                technologyScore: Math.min(100, Math.max(0, insightForm.technologyScore)),
+                peopleScore: Math.min(100, Math.max(0, insightForm.peopleScore)),
+                riskScore: Math.min(100, Math.max(0, insightForm.riskScore)),
+            })
+            .then(() => {
+                setShowAddInsight(false);
+                setInsightForm({ summary: '', recommendations: '', strategyScore: 70, executionScore: 70, technologyScore: 70, peopleScore: 70, riskScore: 70 });
+                refreshActiveAssessment();
+            })
+            .catch((e) => setError(e?.message || 'Failed to add insight'))
+            .finally(() => setAddingInsight(false));
     };
 
     // Calculate Radar Data
@@ -102,9 +181,15 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
     if (activeAssessmentId && activeAssessment) {
         return (
             <div className="p-6 md:p-8 max-w-7xl mx-auto h-full overflow-y-auto bg-slate-50 animate-in fade-in slide-in-from-right-8">
-                <button onClick={() => setActiveAssessmentId(null)} className="flex items-center gap-2 text-slate-500 font-bold hover:text-indigo-600 mb-6 transition-colors">
+                <button type="button" onClick={() => setActiveAssessmentId(null)} className="flex items-center gap-2 text-slate-500 font-bold hover:text-indigo-600 mb-6 transition-colors">
                     <ArrowRight size={18} className="rotate-180" /> Back to Dashboard
                 </button>
+
+                {error && (
+                    <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-700 rounded-xl flex items-center gap-2">
+                        <AlertCircle size={20} /> {error}
+                    </div>
+                )}
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     {/* Left Column: Details & Synthesis */}
@@ -161,26 +246,42 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
                                     )}
                                 </div>
                             ) : (
-                                <div className="mt-8 bg-amber-50 border border-amber-100 p-6 rounded-xl flex items-start gap-4">
+                                <div className="mt-8 bg-amber-50 border border-amber-100 p-6 rounded-xl flex flex-col sm:flex-row sm:items-center gap-4">
                                     <AlertCircle className="text-amber-600 shrink-0 mt-1" />
-                                    <div>
-                                        <h4 className="font-bold text-amber-900">Waiting for Experts</h4>
-                                        <p className="text-sm text-amber-800">No insights submitted yet. Invites have been sent to {activeAssessment.invitedExperts} experts.</p>
+                                    <div className="flex-1">
+                                        <h4 className="font-bold text-amber-900">No expert insights yet</h4>
+                                        <p className="text-sm text-amber-800">Add an expert insight to get started. You can then run AI synthesis.</p>
                                     </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAddInsight(true)}
+                                        className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm hover:bg-indigo-700 shrink-0"
+                                    >
+                                        <Plus size={16} className="inline mr-1" /> Add insight
+                                    </button>
                                 </div>
                             )}
                         </div>
 
                         {/* Individual Insights */}
-                        <h3 className="font-bold text-slate-800 text-xl flex items-center gap-2">
-                            <Users className="text-slate-500" /> Expert Inputs
-                        </h3>
+                        <div className="flex justify-between items-center flex-wrap gap-2">
+                            <h3 className="font-bold text-slate-800 text-xl flex items-center gap-2">
+                                <Users className="text-slate-500" /> Expert Inputs
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setShowAddInsight(true)}
+                                className="text-sm font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                            >
+                                <Plus size={18} /> Add insight
+                            </button>
+                        </div>
                         <div className="grid grid-cols-1 gap-4">
                             {activeAssessment.insights.map(insight => (
                                 <div key={insight.id} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-6">
                                     <div className="flex flex-col items-center text-center md:w-48 shrink-0">
-                                        <div className="w-16 h-16 rounded-full overflow-hidden bg-slate-100 mb-3 border-2 border-white shadow-md">
-                                            <img src={insight.avatarUrl} alt={insight.expertName} className="w-full h-full object-cover" />
+                                        <div className="w-16 h-16 rounded-full overflow-hidden bg-slate-100 mb-3 border-2 border-white shadow-md flex items-center justify-center text-xl font-bold text-slate-500">
+                                            {insight.avatarUrl ? <img src={insight.avatarUrl} alt={insight.expertName} className="w-full h-full object-cover" /> : (insight.expertName?.charAt(0)?.toUpperCase() ?? '?')}
                                         </div>
                                         <h4 className="font-bold text-slate-900 text-sm">{insight.expertName}</h4>
                                         <p className="text-xs text-slate-500 mb-3">{insight.expertRole}</p>
@@ -234,25 +335,62 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
                         <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                             <h3 className="font-bold text-slate-800 mb-4">Expert Roster</h3>
                             <div className="space-y-3">
-                                {Array.from({length: activeAssessment.invitedExperts}).map((_, i) => {
-                                    const insight = activeAssessment.insights[i];
-                                    return (
-                                        <div key={i} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
+                                {activeAssessment.insights.length === 0 ? (
+                                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-100 text-sm text-slate-500">No insights yet. Add one above.</div>
+                                ) : (
+                                    activeAssessment.insights.map((insight, i) => (
+                                        <div key={insight.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg border border-slate-100">
                                             <div className="flex items-center gap-3">
-                                                <div className={`w-2 h-2 rounded-full ${insight ? 'bg-emerald-500' : 'bg-slate-300'}`}></div>
+                                                <div className="w-2 h-2 rounded-full bg-emerald-500" />
                                                 <div>
-                                                    <div className="text-sm font-bold text-slate-700">{insight ? insight.expertName : `Expert ${i+1}`}</div>
-                                                    <div className="text-xs text-slate-400">{insight ? 'Submitted' : 'Pending...'}</div>
+                                                    <div className="text-sm font-bold text-slate-700">{insight.expertName}</div>
+                                                    <div className="text-xs text-slate-400">Submitted</div>
                                                 </div>
                                             </div>
-                                            {insight && <CheckCircle size={16} className="text-emerald-500" />}
+                                            <CheckCircle size={16} className="text-emerald-500" />
                                         </div>
-                                    );
-                                })}
+                                    ))
+                                )}
                             </div>
                         </div>
                     </div>
                 </div>
+
+                {/* Add Insight modal */}
+                {showAddInsight && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => !addingInsight && setShowAddInsight(false)}>
+                        <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-xl font-bold text-slate-900">Add expert insight</h3>
+                                <button type="button" onClick={() => !addingInsight && setShowAddInsight(false)} className="p-2 hover:bg-slate-100 rounded-lg"><X size={20} /></button>
+                            </div>
+                            <form onSubmit={handleAddInsight} className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1">Summary</label>
+                                    <textarea value={insightForm.summary} onChange={(e) => setInsightForm((f) => ({ ...f, summary: e.target.value }))} className="w-full border border-slate-200 rounded-lg p-3 text-sm" rows={3} placeholder="Brief summary of your assessment..." required />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1">Recommendations (one per line)</label>
+                                    <textarea value={insightForm.recommendations} onChange={(e) => setInsightForm((f) => ({ ...f, recommendations: e.target.value }))} className="w-full border border-slate-200 rounded-lg p-3 text-sm" rows={3} placeholder="Recommendation 1&#10;Recommendation 2" />
+                                </div>
+                                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                                    {(['strategyScore', 'executionScore', 'technologyScore', 'peopleScore', 'riskScore'] as const).map((key) => (
+                                        <div key={key}>
+                                            <label className="block text-xs font-bold text-slate-600 mb-1">{key.replace('Score', '')}</label>
+                                            <input type="number" min={0} max={100} value={insightForm[key]} onChange={(e) => setInsightForm((f) => ({ ...f, [key]: parseInt(e.target.value, 10) || 0 }))} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="flex gap-2 pt-2">
+                                    <button type="submit" disabled={addingInsight} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-sm hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2">
+                                        {addingInsight ? <Loader2 size={16} className="animate-spin" /> : null} {addingInsight ? 'Adding...' : 'Add insight'}
+                                    </button>
+                                    <button type="button" onClick={() => !addingInsight && setShowAddInsight(false)} className="px-4 py-2 border border-slate-200 rounded-lg font-bold text-sm text-slate-700 hover:bg-slate-50">Cancel</button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
             </div>
         );
     }
@@ -260,14 +398,15 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
     // Dashboard View
     return (
         <div className="p-6 md:p-8 max-w-7xl mx-auto h-full overflow-y-auto bg-slate-50">
-            <div className="flex justify-between items-center mb-8">
+            <div className="flex justify-between items-center mb-8 flex-wrap gap-4">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
                         <ClipboardCheck className="text-indigo-600" /> External Assessments
                     </h1>
                     <p className="text-slate-500 mt-2">Manage expert audits, strategic reviews, and compliance checks.</p>
                 </div>
-                <button 
+                <button
+                    type="button"
                     onClick={handleCreateAssessment}
                     className="bg-indigo-600 text-white px-5 py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200 flex items-center gap-2"
                 >
@@ -275,7 +414,17 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
                 </button>
             </div>
 
-            {assessments.length > 0 ? (
+            {error && (
+                <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-700 rounded-xl flex items-center gap-2">
+                    <AlertCircle size={20} /> {error}
+                </div>
+            )}
+
+            {loading ? (
+                <div className="flex items-center justify-center py-20 gap-2 text-slate-500">
+                    <Loader2 size={24} className="animate-spin" /> Loading assessments…
+                </div>
+            ) : assessments.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {assessments.map(assessment => (
                         <div 
@@ -302,7 +451,7 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
                             <div className="border-t border-slate-100 pt-4 space-y-3">
                                 <div className="flex justify-between items-center text-sm">
                                     <div className="flex items-center gap-2 text-slate-600 font-medium">
-                                        <Users size={16} /> {assessment.insights.length} / {assessment.invitedExperts} Experts
+                                        <Users size={16} /> {assessment.insights.length} insight{assessment.insights.length !== 1 ? 's' : ''}
                                     </div>
                                     {assessment.insights.length > 0 && (
                                         <div className="flex -space-x-2">
@@ -318,10 +467,10 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
                                 </div>
                             </div>
                             
-                            {/* Progress Bar for In Progress */}
-                            {assessment.status === 'IN_PROGRESS' && (
+                            {/* Progress when we have insights */}
+                            {assessment.insights.length > 0 && (
                                 <div className="w-full bg-slate-100 h-1.5 rounded-full mt-4 overflow-hidden">
-                                    <div className="bg-indigo-600 h-full rounded-full" style={{ width: `${(assessment.insights.length / assessment.invitedExperts) * 100}%` }}></div>
+                                    <div className="bg-indigo-600 h-full rounded-full" style={{ width: `${Math.min(100, assessment.insights.length * 25)}%` }}></div>
                                 </div>
                             )}
                         </div>

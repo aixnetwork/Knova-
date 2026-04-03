@@ -51,8 +51,9 @@ import {
   AreaChart, 
   Area
 } from 'recharts';
-import { UserRole, SubscriptionTier, Course, CourseStatus, FeedbackItem, FeedbackType } from '../types';
+import { UserRole, SubscriptionTier, Course, CourseStatus } from '../types';
 import { PaymentModal } from './PaymentModal';
+import { feedbackApi, adminApi } from '../services/api';
 
 const REVENUE_DATA = [
     { month: 'Jan', revenue: 12000 },
@@ -86,7 +87,7 @@ interface SuperAdminDashboardProps {
 }
 
 export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ courses = [], onUpdateCourse, onDeleteCourse }) => {
-  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'DISTRIBUTED' | 'FINANCE' | 'CONTENT' | 'PRICING' | 'FEEDBACK'>('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'DISTRIBUTED' | 'FINANCE' | 'CONTENT' | 'PRICING' | 'FEEDBACK' | 'USERS'>('OVERVIEW');
   
   const [plans, setPlans] = useState(INITIAL_PLANS);
   const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
@@ -94,18 +95,52 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ course
   
   const [testPaymentOpen, setTestPaymentOpen] = useState(false);
   const [testPlan, setTestPlan] = useState<{name: string, price: number} | null>(null);
-  const [feedbackList, setFeedbackList] = useState<FeedbackItem[]>([]);
+  const [feedbackList, setFeedbackList] = useState<Array<{ id: string; userName: string; userEmail: string; type: string; message: string; status: string }>>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [usersList, setUsersList] = useState<Array<{ id: string; email: string; name: string; role: string }>>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+
+  const loadFeedback = () => {
+    if (activeTab !== 'FEEDBACK') return;
+    setFeedbackLoading(true);
+    feedbackApi.list({ page: 1, limit: 50 })
+      .then(({ data }) => {
+        const list = (data.feedback || []).map((f: { id: string; userName: string; userEmail: string; type: string; message: string; status: string }) => ({
+          id: f.id,
+          userName: f.userName,
+          userEmail: f.userEmail,
+          type: f.type,
+          message: f.message,
+          status: f.status || 'NEW',
+        }));
+        setFeedbackList(list);
+      })
+      .catch(() => setFeedbackList([]))
+      .finally(() => setFeedbackLoading(false));
+  };
+
+  const loadUsers = () => {
+    if (activeTab !== 'USERS') return;
+    setUsersLoading(true);
+    adminApi.getUsers({ page: 1, limit: 50 })
+      .then(({ data }) => setUsersList(data.users || []))
+      .catch(() => setUsersList([]))
+      .finally(() => setUsersLoading(false));
+  };
 
   useEffect(() => {
-      const stored = localStorage.getItem('knovatwin_feedback');
-      if (stored) {
-          try {
-              setFeedbackList(JSON.parse(stored));
-          } catch (e) {
-              console.error("Failed to parse feedback", e);
-          }
-      }
+    loadFeedback();
   }, [activeTab]);
+
+  useEffect(() => {
+    loadUsers();
+  }, [activeTab]);
+
+  const handleFeedbackStatusChange = (id: string, status: string) => {
+    feedbackApi.updateStatus(id, status)
+      .then(() => loadFeedback())
+      .catch(() => {});
+  };
 
   const pendingCourses = courses.filter(c => c.status === CourseStatus.PENDING_APPROVAL);
   const publishedCourses = courses.filter(c => c.status === CourseStatus.PUBLISHED);
@@ -364,6 +399,9 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ course
                 <button onClick={() => setActiveTab('FEEDBACK')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'FEEDBACK' ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
                     <MessageSquare size={18} /> Global Feedback
                 </button>
+                <button onClick={() => setActiveTab('USERS')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-bold rounded-lg transition-all ${activeTab === 'USERS' ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
+                    <Users size={18} /> Users
+                </button>
             </nav>
             <div className="p-4 border-t border-slate-100">
                 <button onClick={() => window.location.reload()} className="w-full flex items-center justify-center gap-2 text-slate-400 hover:text-red-600 py-2 text-xs font-bold transition-colors">
@@ -377,7 +415,81 @@ export const SuperAdminDashboard: React.FC<SuperAdminDashboardProps> = ({ course
             {activeTab === 'DISTRIBUTED' && renderDistributed()}
             {activeTab === 'CONTENT' && renderContent()}
             {activeTab === 'PRICING' && <div>Pricing & Plans (Enabled for scale)</div>}
-            {activeTab === 'FEEDBACK' && <div>Feedback Inbox</div>}
+            {activeTab === 'USERS' && (
+              <div className="space-y-4">
+                <h2 className="text-xl font-bold text-slate-900">Users</h2>
+                {usersLoading ? (
+                  <p className="text-slate-500">Loading…</p>
+                ) : usersList.length === 0 ? (
+                  <p className="text-slate-500">No users found.</p>
+                ) : (
+                  <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold">
+                        <tr>
+                          <th className="px-4 py-3">Name</th>
+                          <th className="px-4 py-3">Email</th>
+                          <th className="px-4 py-3">Role</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {usersList.map((u) => (
+                          <tr key={u.id}>
+                            <td className="px-4 py-3 font-medium text-slate-900">{u.name}</td>
+                            <td className="px-4 py-3 text-slate-600">{u.email}</td>
+                            <td className="px-4 py-3"><span className="px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700">{u.role}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+            {activeTab === 'FEEDBACK' && (
+              <div className="space-y-4">
+                <h2 className="text-xl font-bold text-slate-900">Feedback Inbox</h2>
+                {feedbackLoading ? (
+                  <p className="text-slate-500">Loading…</p>
+                ) : feedbackList.length === 0 ? (
+                  <p className="text-slate-500">No feedback yet.</p>
+                ) : (
+                  <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-50 text-slate-600 font-semibold">
+                        <tr>
+                          <th className="px-4 py-3">From</th>
+                          <th className="px-4 py-3">Type</th>
+                          <th className="px-4 py-3">Message</th>
+                          <th className="px-4 py-3">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {feedbackList.map((fb) => (
+                          <tr key={fb.id}>
+                            <td className="px-4 py-3">{fb.userName} ({fb.userEmail})</td>
+                            <td className="px-4 py-3">{fb.type}</td>
+                            <td className="px-4 py-3 max-w-xs truncate">{fb.message}</td>
+                            <td className="px-4 py-3">
+                              <select
+                                value={fb.status}
+                                onChange={(e) => handleFeedbackStatusChange(fb.id, e.target.value)}
+                                className="text-sm border border-slate-200 rounded px-2 py-1"
+                              >
+                                <option value="NEW">New</option>
+                                <option value="IN_PROGRESS">In Progress</option>
+                                <option value="RESOLVED">Resolved</option>
+                                <option value="CLOSED">Closed</option>
+                              </select>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
         </main>
       </div>
     </div>

@@ -3,6 +3,8 @@ import React, { useState, useEffect } from 'react';
 import { User, Mail, Key, Bell, Moon, Save, CheckCircle, Shield, Bot, Server, Zap, RefreshCw, CreditCard, BadgeCheck, LayoutTemplate, Database, Trash2, AlertTriangle, Loader2, XCircle, LifeBuoy } from 'lucide-react';
 import { UserProfile, UserRole, SubscriptionTier } from '../types';
 import { validateApiKey } from '../services/geminiService';
+import { authApi } from '../services/api';
+import { mapAuthUserToProfile } from '../services/authHelpers';
 
 interface SettingsViewProps {
     user: UserProfile | null;
@@ -114,7 +116,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
         }
     };
 
-    const handleSave = () => {
+    const handleSave = async () => {
         setIsSaving(true);
 
         if (apiKey.trim()) {
@@ -123,38 +125,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
             localStorage.removeItem('knovatwin_custom_api_key');
         }
 
-        if (user) {
-            const directUpdate = {
-                ...user,
+        try {
+            await authApi.updateMe({
                 name,
-                email,
-                role,
-                tier,
-                avatarUrl,
-                title: jobTitle,
-                industry,
-                bio
-            };
-            localStorage.setItem('knovatwin_user_session', JSON.stringify(directUpdate));
+                title: jobTitle || undefined,
+                industry: industry || undefined,
+                bio: bio || undefined,
+                avatarUrl: avatarUrl || undefined,
+            });
+            const { data } = await authApi.me();
+            onUpdateUser(mapAuthUserToProfile(data));
+            if (user) {
+                const directUpdate = { ...user, name, email, role, tier, avatarUrl, title: jobTitle, industry, bio };
+                localStorage.setItem('knovatwin_user_session', JSON.stringify(directUpdate));
+            }
+        } catch (_) {
+            onUpdateUser({ name, email, role, tier, avatarUrl, title: jobTitle, industry, bio });
+            if (user) {
+                const directUpdate = { ...user, name, email, role, tier, avatarUrl, title: jobTitle, industry, bio };
+                localStorage.setItem('knovatwin_user_session', JSON.stringify(directUpdate));
+            }
         }
-
-        onUpdateUser({
-            name,
-            email,
-            role,
-            tier,
-            avatarUrl,
-            title: jobTitle,
-            industry,
-            bio
-        });
 
         setIsSaved(true);
         setTimeout(() => {
             setIsSaving(false);
             setIsSaved(false);
-            // If API key was modified, reload to rebuild singleton
-            window.location.reload(); 
+            if (apiKey.trim()) window.location.reload();
         }, 1500);
     };
 

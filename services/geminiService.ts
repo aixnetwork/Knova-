@@ -9,6 +9,7 @@ import {
     UserProfile, 
     ExpertPersona, 
     AssessmentQuestion, 
+    AssessmentQuestionType,
     AssessmentResult, 
     ExternalAssessment,
     MarketingAssets,
@@ -25,20 +26,22 @@ let client: GoogleGenAI | null = null;
 
 export const getClient = (): GoogleGenAI => {
     if (!client) {
-        // Robust Key Retrieval: Checks Vite env, Process env, then Local Storage with Safety Checks
         const metaEnv = (import.meta as any)?.env || {};
         const processEnv = typeof process !== 'undefined' ? process.env : {};
-
-        const rawKey = metaEnv.VITE_API_KEY || 
-                       processEnv.API_KEY || 
-                       processEnv.VITE_API_KEY || 
-                       localStorage.getItem('knovatwin_custom_api_key') || 
+        const rawKey = metaEnv.VITE_GEMINI_API_KEY ||
+                       metaEnv.GEMINI_API_KEY ||
+                       processEnv.VITE_GEMINI_API_KEY ||
+                       processEnv.GEMINI_API_KEY ||
+                       metaEnv.VITE_API_KEY ||
+                       processEnv.VITE_API_KEY ||
+                       processEnv.API_KEY ||
+                       (typeof localStorage !== 'undefined' ? localStorage.getItem('knovatwin_custom_api_key') : null) ||
                        '';
-        
-        const apiKey = rawKey.trim();
-                       
+        const apiKey = (rawKey && typeof rawKey === 'string' ? rawKey : '').trim();
         if (!apiKey) {
-            console.warn("API Key not found in environment or local storage");
+            const msg = 'Gemini API key not set. Add GEMINI_API_KEY or VITE_GEMINI_API_KEY to Knova-/.env.local and restart the dev server, or enter your key in Settings.';
+            console.error(msg);
+            throw new Error(msg);
         }
         client = new GoogleGenAI({ apiKey });
     }
@@ -48,16 +51,30 @@ export const getClient = (): GoogleGenAI => {
 export const hasValidKey = (): boolean => {
     const metaEnv = (import.meta as any)?.env || {};
     const processEnv = typeof process !== 'undefined' ? process.env : {};
-    const rawKey = metaEnv.VITE_API_KEY || 
-                   processEnv.API_KEY || 
-                   processEnv.VITE_API_KEY || 
-                   localStorage.getItem('knovatwin_custom_api_key') || 
+    const rawKey = metaEnv.VITE_GEMINI_API_KEY ||
+                   metaEnv.GEMINI_API_KEY ||
+                   processEnv.VITE_GEMINI_API_KEY ||
+                   processEnv.GEMINI_API_KEY ||
+                   metaEnv.VITE_API_KEY ||
+                   processEnv.VITE_API_KEY ||
+                   processEnv.API_KEY ||
+                   localStorage.getItem('knovatwin_custom_api_key') ||
                    '';
     return rawKey.trim().length > 0;
 };
 
 export const resetClient = () => {
     client = null;
+};
+
+// --- Helper: Extract text from SDK response (handles .text or candidates[].content.parts[].text) ---
+const getResponseText = (response: GenerateContentResponse): string => {
+    if (response.text && typeof response.text === 'string') return response.text;
+    const candidates = (response as any).candidates;
+    if (Array.isArray(candidates) && candidates[0]?.content?.parts?.[0]?.text) {
+        return candidates[0].content.parts[0].text;
+    }
+    return '';
 };
 
 // --- Helper: Clean JSON ---
@@ -537,8 +554,9 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
   - description: A compelling course description.
   - modules: An array of modules (4-8 modules). Each module must have:
     - title
-    - description (detailed summary of what will be covered)
-    - keyConcepts (array of strings, specific terms/ideas from the source)
+    - description (short summary of what the module covers)
+    - keyConcepts (array of strings)
+    - content (the FULL lesson body for this module: 2-5 paragraphs of teaching content in markdown, so learners see the same content every time without further generation)
   `;
   
   const response = await retryOperation(() => ai.models.generateContent({
@@ -558,9 +576,10 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
               properties: {
                 title: { type: Type.STRING },
                 description: { type: Type.STRING },
-                keyConcepts: { type: Type.ARRAY, items: { type: Type.STRING } }
+                keyConcepts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                content: { type: Type.STRING }
               },
-              required: ['title', 'description', 'keyConcepts']
+              required: ['title', 'description', 'keyConcepts', 'content']
             }
           }
         },
@@ -569,7 +588,8 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
     }
   })) as GenerateContentResponse;
   
-  const data = JSON.parse(cleanJson(response.text || '{}'));
+  const rawText = getResponseText(response);
+  const data = JSON.parse(cleanJson(rawText || '{}'));
   if(data.modules) {
     data.modules = data.modules.map((m: any, i: number) => ({
       ...m,
@@ -699,36 +719,159 @@ export const getOnboardingChat = (user: UserProfile) => {
 };
 
 // --- BICE Data ---
-export const generateBiceData = async (industry: string, strategy: string) => {
+export type BiceEmployee = {
+    id: string;
+    name: string;
+    role: string;
+    type: 'Employee' | 'Consultant';
+    department: string;
+    scores: Record<string, number>;
+    actionPlan: string;
+    targetDate: string;
+    status: 'Pending' | 'In Progress' | 'Completed';
+};
+
+export type BiceResult = {
+    departments: string[];
+    skills: string[];
+    employees: BiceEmployee[];
+    criticalAction?: string;
+};
+
+export const generateBiceData = async (industry: string, strategy: string): Promise<BiceResult | null> => {
     const ai = getClient();
-    const prompt = `Generate mock BICE (Business Impact) data for:
-    Industry: ${industry}
-    Strategy: ${strategy}
-    
-    Return JSON with departments, skills, and a list of employees with scores.`;
+    const prompt = `You are a business impact analyst. Generate realistic BICE (Business Impact Correlation Engine) data.
+
+Industry: "${industry}"
+Strategic goal: "${strategy}"
+
+Return a JSON object with:
+1. departments: array of 4-6 department names (e.g. Sales, Engineering, HR, Marketing).
+2. skills: array of 4-5 skill names relevant to the strategy (e.g. AI Fluency, Data Analytics, Leadership, Compliance).
+3. employees: array of 6-12 people. Each must have: id (short unique string), name, role, type ("Employee" or "Consultant"), department (one of the departments), scores (object mapping each skill name to a number 0-100), actionPlan (one short sentence), targetDate (YYYY-MM-DD), status ("Pending", "In Progress", or "Completed").
+4. criticalAction: one sentence AI recommendation highlighting the biggest gap or priority.`;
+
+    const response = await retryOperation(() => ai.models.generateContent({
+        model: COURSE_MODEL,
+        contents: prompt,
+        config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    departments: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    skills: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    employees: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                id: { type: Type.STRING },
+                                name: { type: Type.STRING },
+                                role: { type: Type.STRING },
+                                type: { type: Type.STRING },
+                                department: { type: Type.STRING },
+                                scores: { type: Type.OBJECT },
+                                actionPlan: { type: Type.STRING },
+                                targetDate: { type: Type.STRING },
+                                status: { type: Type.STRING },
+                            },
+                            required: ['id', 'name', 'role', 'type', 'department', 'scores', 'actionPlan', 'targetDate', 'status'],
+                        },
+                    },
+                    criticalAction: { type: Type.STRING },
+                },
+                required: ['departments', 'skills', 'employees'],
+            },
+        },
+    })) as GenerateContentResponse;
+
+    const rawText = getResponseText(response);
+    const parsed = JSON.parse(cleanJson(rawText || '{}')) as Record<string, unknown>;
+
+    if (!Array.isArray(parsed.departments) || !Array.isArray(parsed.skills) || !Array.isArray(parsed.employees)) {
+        return null;
+    }
+
+    const departments = parsed.departments.filter((d): d is string => typeof d === 'string');
+    const skills = parsed.skills.filter((s): s is string => typeof s === 'string');
+    const criticalAction = typeof parsed.criticalAction === 'string' ? parsed.criticalAction : undefined;
+
+    const employees: BiceEmployee[] = (parsed.employees as Record<string, unknown>[]).map((emp, idx) => {
+        const type = emp.type === 'Consultant' ? 'Consultant' : 'Employee';
+        const status =
+            emp.status === 'Completed' ? 'Completed' :
+                emp.status === 'In Progress' ? 'In Progress' : 'Pending';
+        const scores: Record<string, number> = {};
+        if (emp.scores && typeof emp.scores === 'object' && !Array.isArray(emp.scores)) {
+            for (const [k, v] of Object.entries(emp.scores)) {
+                if (typeof v === 'number') scores[k] = v;
+            }
+        }
+        skills.forEach(s => {
+            if (scores[s] === undefined) scores[s] = Math.min(100, Math.max(0, Math.round(Math.random() * 80)));
+        });
+        return {
+            id: typeof emp.id === 'string' ? emp.id : `e${idx + 1}`,
+            name: typeof emp.name === 'string' ? emp.name : 'Unknown',
+            role: typeof emp.role === 'string' ? emp.role : 'Staff',
+            type,
+            department: typeof emp.department === 'string' && departments.includes(emp.department) ? emp.department : departments[0] || 'General',
+            scores,
+            actionPlan: typeof emp.actionPlan === 'string' ? emp.actionPlan : 'Review learning path',
+            targetDate: typeof emp.targetDate === 'string' ? emp.targetDate : '2024-12-31',
+            status,
+        };
+    });
+
+    return { departments, skills, employees, criticalAction };
+};
+
+// --- Assessment ---
+
+/** Raw shape returned by Gemini (question_text, type: "multiple_choice" | "open_ended", options, etc.) */
+type GeminiAssessmentItem = {
+    question_text?: string;
+    question?: string;
+    type?: string;
+    options?: string[];
+    correct_answer?: string;
+    suggested_answer_placeholder?: string;
+};
+
+export const generateAssessment = async (course: Course): Promise<AssessmentQuestion[]> => {
+    const ai = getClient();
+    const prompt = `Generate a final assessment for the course: ${course.title || course.topic}.
+    Include 3 multiple choice and 2 open ended questions.
+    Return a JSON array. Each item must have:
+    - "type": "multiple_choice" or "open_ended"
+    - "question_text": the question string
+    - For multiple_choice: "options" (array of strings), "correct_answer" (string)
+    - For open_ended: "suggested_answer_placeholder" (optional string)
+    Return only the JSON array, no other text.`;
     
     const response = await retryOperation(() => ai.models.generateContent({
         model: COURSE_MODEL,
         contents: prompt,
         config: { responseMimeType: 'application/json' }
     })) as GenerateContentResponse;
-    return JSON.parse(cleanJson(response.text || '{}'));
-};
+    const rawText = getResponseText(response);
+    const rawList: GeminiAssessmentItem[] = JSON.parse(cleanJson(rawText || '[]'));
+    if (!Array.isArray(rawList)) return [];
 
-// --- Assessment ---
-
-export const generateAssessment = async (course: Course): Promise<AssessmentQuestion[]> => {
-    const ai = getClient();
-    const prompt = `Generate a final assessment for the course: ${course.title}.
-    Include 3 multiple choice and 2 open ended questions.
-    Return JSON.`;
-    
-    const response = await retryOperation(() => ai.models.generateContent({
-        model: COURSE_MODEL,
-        contents: prompt,
-        config: { responseMimeType: 'application/json' } 
-    })) as GenerateContentResponse;
-    return JSON.parse(cleanJson(response.text || '[]'));
+    return rawList.map((item, index): AssessmentQuestion => {
+        const questionText = item.question_text || item.question || '';
+        const typeStr = (item.type || '').toLowerCase();
+        const type: AssessmentQuestionType = typeStr === 'open_ended' || typeStr === 'open ended'
+            ? AssessmentQuestionType.OPEN_ENDED
+            : AssessmentQuestionType.MULTIPLE_CHOICE;
+        return {
+            id: `aq-${Date.now()}-${index}`,
+            question: questionText,
+            type,
+            options: Array.isArray(item.options) ? item.options : (type === AssessmentQuestionType.MULTIPLE_CHOICE ? [] : undefined),
+        };
+    });
 };
 
 export const evaluateAssessment = async (course: Course, questions: AssessmentQuestion[], answers: any): Promise<AssessmentResult> => {
