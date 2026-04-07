@@ -7,7 +7,7 @@ import {
     Radio, Volume2, VolumeX
 } from 'lucide-react';
 import { Course, CourseStatus, Module, UserProfile, MarketingAssets, MicroLesson, ExpertPersona, ChatMessage } from '../types';
-import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, isUserGeminiSessionReady, requireUserGeminiSessionOrToast } from '../services/geminiService';
+import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, isUserGeminiSessionReady, requireUserGeminiSessionOrToast, showKnovaToast } from '../services/geminiService';
 import { LiveTutor } from './LiveTutor';
 
 interface CreatorStudioProps {
@@ -813,10 +813,15 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                     onClick={async () => {
                                         if (!requireUserGeminiSessionOrToast()) return;
                                         setIsGeneratingMarketing(true);
-                                        const data = await generateCourseMarketingAssets({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
-                                        setMarketingData(data);
-                                        setIsGeneratingMarketing(false);
-                                        setShowMarketingModal(true);
+                                        try {
+                                            const data = await generateCourseMarketingAssets({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
+                                            setMarketingData(data);
+                                            setShowMarketingModal(true);
+                                        } catch {
+                                            showKnovaToast('Could not load sales assets. Try again in a moment.');
+                                        } finally {
+                                            setIsGeneratingMarketing(false);
+                                        }
                                     }}
                                     disabled={isGeneratingMarketing}
                                     className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
@@ -1014,7 +1019,110 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                 </div>
             )}
 
-            {/* TWIN_LAB and MARKETING render modes can be added here if needed */}
+            {showMarketingModal && marketingData && (
+                <div
+                    className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="sales-assets-title"
+                    onClick={() => setShowMarketingModal(false)}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
+                            <h2 id="sales-assets-title" className="text-lg font-bold text-slate-900">Sales & marketing assets</h2>
+                            <button
+                                type="button"
+                                onClick={() => setShowMarketingModal(false)}
+                                className="p-2 rounded-lg text-slate-500 hover:bg-slate-200/80 hover:text-slate-800 transition-colors"
+                                aria-label="Close"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="overflow-y-auto p-6 space-y-10">
+                            <section>
+                                <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                    <Layers size={16} /> Slide deck
+                                </h3>
+                                <div className="space-y-4">
+                                    {marketingData.slides.map((slide, idx) => (
+                                        <div key={idx} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50">
+                                            <p className="text-xs font-bold text-amber-600 mb-1">Slide {idx + 1}</p>
+                                            <h4 className="font-bold text-slate-900 mb-2">{slide.title}</h4>
+                                            <ul className="list-disc list-inside text-sm text-slate-600 space-y-1 mb-3">
+                                                {slide.bullets.map((b, i) => (
+                                                    <li key={i}>{b}</li>
+                                                ))}
+                                            </ul>
+                                            <p className="text-xs text-slate-500 border-t border-slate-200 pt-3">
+                                                <span className="font-semibold text-slate-600">Speaker notes: </span>
+                                                {slide.speakerNotes}
+                                            </p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+
+                            <section>
+                                <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                    <BarChart3 size={16} /> Infographics
+                                </h3>
+                                <div className="grid gap-4 sm:grid-cols-1">
+                                    {marketingData.infographic.map((block, idx) => (
+                                        <div
+                                            key={idx}
+                                            className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm"
+                                        >
+                                            <div className="flex items-start justify-between gap-2 mb-2">
+                                                <h4 className="font-bold text-slate-900">{block.title}</h4>
+                                                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                                                    {block.colorTheme}
+                                                </span>
+                                            </div>
+                                            <p className="text-sm text-slate-600 mb-2">{block.content}</p>
+                                            <p className="text-xs text-slate-400">
+                                                <span className="font-medium text-slate-500">Icon idea: </span>
+                                                {block.iconSuggestion}
+                                            </p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+
+                            <section>
+                                <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                    <PlayCircle size={16} /> YouTube resources
+                                </h3>
+                                <div className="space-y-3">
+                                    {marketingData.youtubeResources.map((vid, idx) => (
+                                        <div
+                                            key={idx}
+                                            className="p-4 rounded-xl border border-slate-200 bg-slate-50/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                                        >
+                                            <div>
+                                                <h4 className="font-bold text-slate-900">{vid.title}</h4>
+                                                <p className="text-sm text-indigo-600">{vid.channelName}</p>
+                                                <p className="text-xs text-slate-500 mt-1">{vid.reason}</p>
+                                            </div>
+                                            <a
+                                                href={`https://www.youtube.com/results?search_query=${encodeURIComponent(vid.searchQuery)}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors shrink-0"
+                                            >
+                                                <LinkIcon size={16} /> Open search
+                                            </a>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

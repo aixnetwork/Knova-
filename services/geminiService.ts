@@ -108,13 +108,22 @@ export function requireUserGeminiSessionOrToast(): boolean {
 }
 
 // --- Helper: Extract text from SDK response (handles .text or candidates[].content.parts[].text) ---
+// Gemini 2.x may return multiple parts (e.g. internal reasoning + final JSON); prefer the last part that looks like JSON.
 const getResponseText = (response: GenerateContentResponse): string => {
-    if (response.text && typeof response.text === 'string') return response.text;
+    const direct = (response as any).text;
+    if (typeof direct === 'string' && direct.trim()) return direct;
     const candidates = (response as any).candidates;
-    if (Array.isArray(candidates) && candidates[0]?.content?.parts?.[0]?.text) {
-        return candidates[0].content.parts[0].text;
+    if (!Array.isArray(candidates) || !candidates[0]?.content?.parts?.length) return '';
+    const parts = candidates[0].content.parts as Array<{ text?: string }>;
+    const texts = parts
+        .map((p) => p?.text)
+        .filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
+    if (texts.length === 0) return '';
+    for (let i = texts.length - 1; i >= 0; i--) {
+        const t = texts[i].trim();
+        if (t.startsWith('{') || t.startsWith('[')) return texts[i];
     }
-    return '';
+    return texts.join('\n');
 };
 
 // --- Helper: Clean JSON ---
@@ -547,7 +556,8 @@ export const generateCourseMarketingAssets = async (course: Course): Promise<Mar
             }
         })) as GenerateContentResponse;
         
-        const data = JSON.parse(cleanJson(response.text || '{}'));
+        const raw = getResponseText(response);
+        const data = JSON.parse(cleanJson(raw || '{}'));
         
         return {
             slides: data.slides || [],
