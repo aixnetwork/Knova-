@@ -2,8 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { User, Mail, Key, Bell, Moon, Save, CheckCircle, Shield, Bot, Server, Zap, RefreshCw, CreditCard, BadgeCheck, LayoutTemplate, Database, Trash2, AlertTriangle, Loader2, XCircle, LifeBuoy } from 'lucide-react';
 import { UserProfile, UserRole, SubscriptionTier } from '../types';
-import { validateApiKey } from '../services/geminiService';
-import { authApi } from '../services/api';
+import { validateApiKey, setSessionUserApiKey, clearSessionUserApiKey, resetClient, LEGACY_LOCAL_STORAGE_KEY } from '../services/geminiService';
+import { authApi, getToken } from '../services/api';
 import { mapAuthUserToProfile } from '../services/authHelpers';
 
 interface SettingsViewProps {
@@ -40,10 +40,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
 
     // Initial Load
     useEffect(() => {
-        const storedKey = localStorage.getItem('knovatwin_custom_api_key');
-        if (storedKey) setApiKey(storedKey);
         calculateStorage();
     }, []);
+
+    useEffect(() => {
+        try {
+            if (sessionStorage.getItem('knovatwin_focus_integrations') === '1') {
+                sessionStorage.removeItem('knovatwin_focus_integrations');
+                setActiveTab('INTEGRATIONS');
+            }
+        } catch {
+            /* ignore */
+        }
+    }, []);
+
+    useEffect(() => {
+        if (user?.hasGeminiKey) {
+            setApiKey('');
+        } else {
+            const leg = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
+            setApiKey(leg || '');
+        }
+    }, [user?.id, user?.hasGeminiKey]);
 
     // Sync from prop
     useEffect(() => {
@@ -86,6 +104,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
         setAvatarUrl(`https://api.dicebear.com/7.x/avataaars/svg?seed=${randomSeed}`);
     };
 
+    const handleRemoveGeminiKey = async () => {
+        if (!user?.hasGeminiKey && !localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY)) return;
+        if (!confirm('Remove your stored Gemini API key? AI features will stop until you add a new key.')) return;
+        const isGod = user?.id?.startsWith('user-godmode');
+        if (isGod) {
+            localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+            clearSessionUserApiKey();
+            resetClient();
+            setApiKey('');
+            onUpdateUser({ hasGeminiKey: false });
+            return;
+        }
+        if (!getToken()) return;
+        try {
+            await authApi.deleteMyGeminiKey();
+            clearSessionUserApiKey();
+            resetClient();
+            localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+            setApiKey('');
+            const { data } = await authApi.me();
+            onUpdateUser(mapAuthUserToProfile(data));
+        } catch (e) {
+            console.error(e);
+        }
+    };
+
     const handleTestKey = async () => {
         if (!apiKey) return;
         setKeyStatus('TESTING');
@@ -95,7 +139,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
             setKeyError('');
         } else {
             setKeyStatus('INVALID');
-            setKeyError(result.error || "Invalid Key");
+            setKeyError(result.error || 'Could not validate this key. Please try again.');
         }
     };
 
@@ -119,13 +163,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
     const handleSave = async () => {
         setIsSaving(true);
 
-        if (apiKey.trim()) {
-            localStorage.setItem('knovatwin_custom_api_key', apiKey.trim());
-        } else {
-            localStorage.removeItem('knovatwin_custom_api_key');
-        }
-
+        const isGod = user?.id?.startsWith('user-godmode');
         try {
+            if (apiKey.trim()) {
+                const check = await validateApiKey(apiKey.trim());
+                if (!check.valid) {
+                    setKeyStatus('INVALID');
+                    setKeyError(check.error || 'Could not validate this key. Please try again.');
+                    setIsSaving(false);
+                    return;
+                }
+                if (isGod) {
+                    localStorage.setItem(LEGACY_LOCAL_STORAGE_KEY, apiKey.trim());
+                    setSessionUserApiKey(apiKey.trim());
+                    resetClient();
+                    onUpdateUser({ hasGeminiKey: true });
+                } else if (getToken()) {
+                    await authApi.saveMyGeminiKey(apiKey.trim());
+                    setSessionUserApiKey(apiKey.trim());
+                    resetClient();
+                    localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+                    onUpdateUser({ hasGeminiKey: true });
+                }
+            }
+
             await authApi.updateMe({
                 name,
                 title: jobTitle || undefined,
@@ -139,7 +200,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
                 const directUpdate = { ...user, name, email, role, tier, avatarUrl, title: jobTitle, industry, bio };
                 localStorage.setItem('knovatwin_user_session', JSON.stringify(directUpdate));
             }
-        } catch (_) {
+        } catch (e: any) {
+            // Make sure we never show a raw JSON blob in the UI.
+            const msg = String(e?.message || '');
+            if (msg) {
+                setKeyStatus('INVALID');
+                setKeyError(msg);
+            }
             onUpdateUser({ name, email, role, tier, avatarUrl, title: jobTitle, industry, bio });
             if (user) {
                 const directUpdate = { ...user, name, email, role, tier, avatarUrl, title: jobTitle, industry, bio };
@@ -151,7 +218,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
         setTimeout(() => {
             setIsSaving(false);
             setIsSaved(false);
-            if (apiKey.trim()) window.location.reload();
         }, 1500);
     };
 
@@ -373,8 +439,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
                                             <input
                                                 type="password"
                                                 value={apiKey}
-                                                onChange={(e) => setApiKey(e.target.value)}
-                                                placeholder="AIzaSy..."
+                                                onChange={(e) => {
+                                                    setApiKey(e.target.value);
+                                                    if (keyStatus !== 'IDLE') setKeyStatus('IDLE');
+                                                    if (keyError) setKeyError('');
+                                                }}
+                                                placeholder={user?.hasGeminiKey ? 'Enter a new key to replace the saved one' : 'AIzaSy...'}
                                                 className={`w-full p-3 bg-slate-50 border rounded-lg text-sm font-mono focus:ring-2 focus:ring-amber-500 outline-none ${keyStatus === 'INVALID' ? 'border-red-300' : 'border-slate-200'}`}
                                             />
                                             <button
@@ -387,7 +457,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser }
                                         </div>
                                         {keyStatus === 'INVALID' && <p className="text-xs text-red-500 font-bold">{keyError}</p>}
                                         {keyStatus === 'VALID' && <p className="text-xs text-emerald-600 font-bold">Connection Successful</p>}
-                                        <p className="text-xs text-slate-400 mt-2">Key stored locally in browser.</p>
+                                        <p className="text-xs text-slate-400 mt-2">
+                                            {user?.hasGeminiKey
+                                                ? 'A Gemini key is saved on your account (encrypted). Enter a new key above and save to replace it.'
+                                                : 'Your key is encrypted and stored with your account after you save.'}
+                                        </p>
+                                        {(user?.hasGeminiKey ||
+                                            (typeof window !== 'undefined' &&
+                                                user?.id?.startsWith('user-godmode') &&
+                                                !!localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY))) && (
+                                            <button
+                                                type="button"
+                                                onClick={handleRemoveGeminiKey}
+                                                className="mt-3 text-xs font-bold text-red-600 hover:text-red-700 underline"
+                                            >
+                                                Remove stored Gemini key
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
                             </div>

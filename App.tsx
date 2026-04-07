@@ -48,7 +48,7 @@ import {
 } from 'lucide-react';
 
 import { Course, Module, AppView, QuizQuestion, UserStats, UserProfile, UserRole, SubscriptionTier, MicroLesson, CourseStatus, AssessmentResult } from './types';
-import { generateModuleContent, streamModuleContent, generateQuizForModule, generateConceptImage, validateApiKey, generateSpeech } from './services/geminiService';
+import { generateModuleContent, streamModuleContent, generateQuizForModule, generateConceptImage, generateSpeech, setSessionUserApiKey, clearSessionUserApiKey, resetClient, LEGACY_LOCAL_STORAGE_KEY } from './services/geminiService';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { LiveTutor } from './components/LiveTutor';
 import { SimulationView } from './components/SimulationView';
@@ -72,7 +72,7 @@ import { CohortProgramView } from './components/CohortProgramView';
 import { ExternalAssessmentView } from './components/ExternalAssessmentView';
 import { FeedbackModal } from './components/FeedbackModal';
 import { TwinManager } from './components/TwinManager';
-import { authApi, clearToken, coursesApi, enrollmentsApi } from './services/api';
+import { authApi, clearToken, coursesApi, enrollmentsApi, type AuthUser } from './services/api';
 import { mapAuthUserToProfile } from './services/authHelpers';
 
 // --- Performance Hook: Debounce ---
@@ -155,6 +155,52 @@ const persistIndexToStorage = (courses: Course[]) => {
         console.error("Failed to save index:", e);
     }
 };
+
+async function bootstrapGeminiSession(authUser: AuthUser): Promise<UserProfile> {
+    const isGodMode = authUser.id?.startsWith('user-godmode');
+    clearSessionUserApiKey();
+    resetClient();
+
+    if (isGodMode) {
+        const legacy = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
+        if (legacy?.trim()) setSessionUserApiKey(legacy.trim());
+        resetClient();
+        return mapAuthUserToProfile({
+            ...authUser,
+            hasGeminiKey: !!legacy?.trim(),
+        });
+    }
+
+    let hasKey = authUser.hasGeminiKey === true;
+    let nextAuth: AuthUser = { ...authUser };
+    if (!hasKey) {
+        const legacy = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
+        if (legacy?.trim()) {
+            try {
+                await authApi.saveMyGeminiKey(legacy.trim());
+                localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+                hasKey = true;
+                nextAuth = { ...nextAuth, hasGeminiKey: true };
+            } catch {
+                /* ignore */
+            }
+        }
+    }
+
+    if (hasKey) {
+        try {
+            const { data } = await authApi.getMyGeminiKey();
+            if (data?.apiKey) setSessionUserApiKey(data.apiKey);
+            else hasKey = false;
+        } catch {
+            hasKey = false;
+        }
+    }
+
+    if (!hasKey) clearSessionUserApiKey();
+    resetClient();
+    return mapAuthUserToProfile({ ...nextAuth, hasGeminiKey: hasKey });
+}
 
 // --- Markdown Helper ---
 const renderMarkdown = (text: string, isFocusMode: boolean) => {
@@ -248,9 +294,8 @@ export const App: React.FC = () => {
     const [showMobileModuleList, setShowMobileModuleList] = useState(false);
     const [saveSuccess, setSaveSuccess] = useState(false);
     const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-    const [customApiKey, setCustomApiKey] = useState('');
-    const [keyValidationStatus, setKeyValidationStatus] = useState<'IDLE' | 'VALIDATING' | 'ERROR'>('IDLE');
-    const [keyValidationError, setKeyValidationError] = useState('');
+    const [isRecheckingGeminiKey, setIsRecheckingGeminiKey] = useState(false);
+    const [dismissedGeminiGate, setDismissedGeminiGate] = useState(false);
 
     const [courseSearch, setCourseSearch] = useState('');
     const [focusMode, setFocusMode] = useState(false);
@@ -320,8 +365,9 @@ export const App: React.FC = () => {
             return;
         }
         authApi.me()
-            .then(({ data }) => {
-                setUser(mapAuthUserToProfile(data));
+            .then(async ({ data }) => {
+                const profile = await bootstrapGeminiSession(data);
+                setUser(profile);
                 const p = location.pathname.replace(/\/$/, '') || '/';
                 if (p === '/' || p === '/login') navigate('/dashboard', { replace: true });
             })
@@ -381,6 +427,18 @@ export const App: React.FC = () => {
             window.removeEventListener('knovatwin-storage-warning', handleStorageWarning);
             window.removeEventListener('knovatwin-storage-error', handleStorageError);
         };
+    }, []);
+
+    useEffect(() => {
+        const onAppToast = (e: Event) => {
+            const msg = (e as CustomEvent<{ message?: string }>).detail?.message;
+            if (msg) {
+                setStorageNotification(msg);
+                setTimeout(() => setStorageNotification(null), 5000);
+            }
+        };
+        window.addEventListener('knovatwin-app-toast', onAppToast);
+        return () => window.removeEventListener('knovatwin-app-toast', onAppToast);
     }, []);
 
     useEffect(() => {
@@ -470,44 +528,72 @@ export const App: React.FC = () => {
     }, [user]);
 
     useEffect(() => {
-        if (user) {
-            const geminiKey = (import.meta as any)?.env?.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' && (process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY)) || '';
-            const hasEnvKey = geminiKey.length > 10;
-            const storedKey = localStorage.getItem('knovatwin_custom_api_key');
-            if (!hasEnvKey && !storedKey) {
-                setShowApiKeyModal(true);
-            }
-        }
-    }, [user]);
-
-    const handleSaveApiKey = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (customApiKey.trim()) {
-            setKeyValidationStatus('VALIDATING');
-            setKeyValidationError('');
-            const result = await validateApiKey(customApiKey.trim());
-            if (result.valid) {
-                localStorage.setItem('knovatwin_custom_api_key', customApiKey.trim());
-                setKeyValidationStatus('IDLE');
+        if (user && user.hasGeminiKey !== true) {
+            if (view === AppView.SETTINGS) {
                 setShowApiKeyModal(false);
-                alert("Key Verified! Welcome to KnovaTwin.");
-                window.location.reload();
             } else {
-                setKeyValidationStatus('ERROR');
-                setKeyValidationError(result.error || "Invalid Key");
+                setShowApiKeyModal(!dismissedGeminiGate);
             }
+        } else {
+            setShowApiKeyModal(false);
+        }
+    }, [user, view, dismissedGeminiGate]);
+
+    const handleOpenSettingsForApiKey = () => {
+        try {
+            sessionStorage.setItem('knovatwin_focus_integrations', '1');
+        } catch {
+            /* ignore */
+        }
+        navigateToView(AppView.SETTINGS);
+    };
+
+    const handleDismissGeminiGate = () => {
+        setDismissedGeminiGate(true);
+        setShowApiKeyModal(false);
+    };
+
+    const handleRecheckGeminiKeyAfterSettings = async () => {
+        // User claims they saved the key; let them continue regardless.
+        setDismissedGeminiGate(true);
+        setShowApiKeyModal(false);
+
+        const isGod = user?.id?.startsWith('user-godmode');
+        if (isGod) {
+            const leg = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
+            if (leg?.trim()) {
+                setSessionUserApiKey(leg.trim());
+                resetClient();
+                setUser(prev => (prev ? { ...prev, hasGeminiKey: true } : null));
+            }
+            return;
+        }
+        const token = localStorage.getItem('knovatwin_token');
+        if (!token) return;
+        setIsRecheckingGeminiKey(true);
+        try {
+            const { data } = await authApi.me();
+            const profile = await bootstrapGeminiSession(data);
+            setUser(profile);
+        } catch {
+            /* ignore */
+        } finally {
+            setIsRecheckingGeminiKey(false);
         }
     };
 
     const handleLogout = () => {
+        clearSessionUserApiKey();
+        resetClient();
         setUser(null);
         clearToken();
         localStorage.removeItem('knovatwin_user_session');
         navigateToView(AppView.LANDING);
     };
 
-    const handleLogin = (newUser: UserProfile) => {
-        setUser(newUser);
+    const handleLogin = async (authUser: AuthUser) => {
+        const profile = await bootstrapGeminiSession(authUser);
+        setUser(profile);
         navigateToView(AppView.DASHBOARD);
     };
 
@@ -1201,7 +1287,14 @@ export const App: React.FC = () => {
             case AppView.LIVE_TUTOR:
                 const activeC = courses.find(c => c.id === activeCourseId);
                 const activeContext = activeC?.modules?.map(m => `Module: ${m.title}\n${m.content || m.description}`).join('\n\n');
-                return <LiveTutor topic={activeC?.topic} contextContent={activeContext} onClose={() => navigateToView(AppView.DASHBOARD)} />;
+                return (
+                    <LiveTutor
+                        topic={activeC?.topic}
+                        contextContent={activeContext}
+                        onClose={() => navigateToView(AppView.DASHBOARD)}
+                        onGoToTwinLab={() => navigateToView(AppView.TWIN_MANAGER)}
+                    />
+                );
             case AppView.PATHFINDER:
                 return (
                     <PathfinderView
@@ -1282,6 +1375,57 @@ export const App: React.FC = () => {
         }
     };
 
+    const renderGeminiKeyGateModal = () => {
+        if (!showApiKeyModal) return null;
+        return (
+            <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur flex items-center justify-center p-4">
+                <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl animate-in fade-in slide-in-from-bottom-4">
+                    <div className="flex flex-col items-center text-center mb-6">
+                        <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mb-4">
+                            <Key size={32} className="text-indigo-600" />
+                        </div>
+                        <h2 className="text-2xl font-bold text-slate-900">Expertise key required</h2>
+                        <p className="text-slate-500 mt-3 text-sm leading-relaxed">
+                            AI features need your own Google Gemini API key. Open <span className="font-semibold text-slate-700">Settings</span>, then the{' '}
+                            <span className="font-semibold text-slate-700">Integrations</span> tab, paste your key, and tap <span className="font-semibold text-slate-700">Save</span>.
+                            Until you do this, other parts of the app stay blocked.
+                        </p>
+                    </div>
+                    <div className="space-y-3">
+                        <button
+                            type="button"
+                            onClick={handleOpenSettingsForApiKey}
+                            className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all"
+                        >
+                            Open Settings → Integrations
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleRecheckGeminiKeyAfterSettings}
+                            disabled={isRecheckingGeminiKey}
+                            className="w-full py-3 rounded-xl font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                        >
+                            {isRecheckingGeminiKey ? <Loader2 className="animate-spin w-5 h-5" /> : null}
+                            {isRecheckingGeminiKey ? 'Checking…' : "I've saved my key — continue"}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleDismissGeminiGate}
+                            className="w-full py-3 rounded-xl font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-all"
+                        >
+                            Close
+                        </button>
+                    </div>
+                    <p className="text-center mt-5 text-xs text-slate-400">
+                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="underline hover:text-indigo-500">
+                            Get a Gemini API key from Google
+                        </a>
+                    </p>
+                </div>
+            </div>
+        );
+    };
+
     // Avoid flash of login: show loading until session is resolved, or until view is in sync with URL for logged-in user
     const pathname = location.pathname.replace(/\/$/, '') || '/';
     const isPublicPathname = pathname === '/' || pathname === '/login' || pathname === '/about' || /^\/embed\//.test(pathname);
@@ -1308,23 +1452,7 @@ export const App: React.FC = () => {
         return (
             <div className="h-full w-full bg-slate-50 overflow-hidden">
                 {renderContent()}
-                {showApiKeyModal && (
-                    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur flex items-center justify-center p-4">
-                        <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl animate-in fade-in slide-in-from-bottom-4">
-                            <div className="flex flex-col items-center text-center mb-6">
-                                <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mb-4"><Key size={32} className="text-indigo-600" /></div>
-                                <h2 className="text-2xl font-bold text-slate-900">Enter API Key</h2>
-                                <p className="text-slate-500 mt-2 text-sm">To enable the full AI experience, please provide your Google Gemini API Key. It will be stored locally on your device.</p>
-                            </div>
-                            <form onSubmit={handleSaveApiKey} className="space-y-4">
-                                <input type="password" value={customApiKey} onChange={(e) => setCustomApiKey(e.target.value)} placeholder="AIzaSy..." className={`w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 ${keyValidationStatus === 'ERROR' ? 'border-red-500' : 'border-slate-300'}`} />
-                                {keyValidationStatus === 'ERROR' && <p className="text-red-500 text-xs">{keyValidationError}</p>}
-                                <button type="submit" disabled={!customApiKey || keyValidationStatus === 'VALIDATING'} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all flex items-center justify-center gap-2">{keyValidationStatus === 'VALIDATING' ? <Loader2 className="animate-spin" /> : 'Validate & Enter'}</button>
-                            </form>
-                            <p className="text-center mt-4 text-xs text-slate-400"><a href="https://aistudio.google.com/app/apikey" target="_blank" className="underline hover:text-indigo-500">Get a Gemini API Key</a></p>
-                        </div>
-                    </div>
-                )}
+                {renderGeminiKeyGateModal()}
             </div>
         );
     }
@@ -1438,6 +1566,8 @@ export const App: React.FC = () => {
 
                 <FeedbackModal isOpen={isFeedbackOpen} onClose={() => setIsFeedbackOpen(false)} user={user} />
             </main>
+
+            {renderGeminiKeyGateModal()}
         </div>
     );
 };

@@ -44,13 +44,12 @@ import {
   Lock,
   Shield
 } from 'lucide-react';
-import { UserProfile, UserRole, SubscriptionTier, AppView } from '../types';
+import { UserRole, SubscriptionTier, AppView } from '../types';
 import { Logo } from './Logo';
-import { authApi, setToken } from '../services/api';
-import { mapAuthUserToProfile } from '../services/authHelpers';
+import { authApi, setToken, type AuthUser } from '../services/api';
 
 interface LandingPageProps {
-  onEnterApp: (user: UserProfile) => void;
+  onEnterApp: (user: AuthUser) => void | Promise<void>;
   onNavigate: (view: AppView) => void;
 }
 
@@ -126,16 +125,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onNavigate
 
       // Super Admin bypass (demo only – no backend)
       if (normalizedEmail === 'knovaadmin' || (regName && regName.toLowerCase() === 'knovaadmin')) {
-          onEnterApp({
+          await onEnterApp({
               id: `user-godmode-${Date.now()}`,
               name: 'Knova Admin',
               email: normalizedEmail,
-              role: UserRole.ADMIN,
-              tier: SubscriptionTier.COMPANY,
+              role: 'ADMIN',
               avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=knovaadmin`,
-              isCreatorMode: true,
-              title: "System Administrator",
-              bio: "Platform Super Admin"
+              title: 'System Administrator',
+              bio: 'Platform Super Admin',
+              hasGeminiKey: false,
           });
           return;
       }
@@ -158,14 +156,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onEnterApp, onNavigate
           if (isLoginMode) {
               const { data } = await authApi.login(normalizedEmail, password);
               setToken(data.token);
-              onEnterApp(mapAuthUserToProfile(data.user));
+              await onEnterApp(data.user);
           } else {
               const ref = sessionStorage.getItem('knovatwin_ref') || undefined;
               const role = regRoleType === 'COMPANY' ? 'ADMIN' : regRoleType === 'EXPERT' ? 'FACILITATOR' : undefined;
               const { data } = await authApi.register(normalizedEmail, password, regName.trim() || normalizedEmail.split('@')[0] || 'User', ref || undefined, role);
               if (ref) sessionStorage.removeItem('knovatwin_ref');
               setToken(data.token);
-              onEnterApp(mapAuthUserToProfile(data.user));
+              await onEnterApp(data.user);
           }
       } catch (err: unknown) {
           const msg = err && typeof err === 'object' && 'message' in err ? String((err as { message: string }).message) : 'Login failed. Try again.';

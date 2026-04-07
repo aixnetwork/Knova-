@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Send, X, ChevronDown, Sparkles, Bot, Minimize2, RotateCcw } from 'lucide-react';
 import { UserProfile } from '../types';
-import { getOnboardingChat, hasValidKey } from '../services/geminiService';
+import { getOnboardingChat, isUserGeminiSessionReady, showKnovaToast } from '../services/geminiService';
 
 interface OnboardingAssistantProps {
     user: UserProfile;
@@ -51,7 +51,8 @@ export const OnboardingAssistant: React.FC<OnboardingAssistantProps> = ({ user }
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const startChat = async (withDelay = false) => {
-        if (!hasValidKey()) {
+        if (!isUserGeminiSessionReady()) {
+            showKnovaToast('Set your Gemini API key first: open Settings, then Integrations, and save your key.');
             setMessages([{ role: 'model', text: "Welcome to KnovaTwin! Please verify your API Key in Settings to enable the AI Guide." }]);
             return;
         }
@@ -111,11 +112,12 @@ export const OnboardingAssistant: React.FC<OnboardingAssistantProps> = ({ user }
     const handleSend = async () => {
         if (!input.trim()) return;
         
-        if (!chatSession && hasValidKey()) {
+        if (!chatSession && isUserGeminiSessionReady()) {
              // Try to reconnect if session lost but key exists
              const session = getOnboardingChat(user);
              setChatSession(session);
         } else if (!chatSession) {
+             showKnovaToast('Set your Gemini API key first: open Settings, then Integrations, and save your key.');
              setMessages(prev => [...prev, { role: 'model', text: "Please set your API key in Settings to chat." }]);
              return;
         }

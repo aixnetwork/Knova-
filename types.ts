@@ -73,6 +73,8 @@ export interface UserProfile {
   industry?: string;
   interests?: string[];
   bio?: string;
+  /** Server-backed BYOK: user has a Gemini key stored (encrypted). */
+  hasGeminiKey?: boolean;
 }
 
 export interface Module {

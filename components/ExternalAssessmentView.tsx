@@ -24,7 +24,7 @@ import {
     Tooltip,
 } from 'recharts';
 import { ExternalAssessment, UserProfile } from '../types';
-import { synthesizeAssessmentReport } from '../services/geminiService';
+import { synthesizeAssessmentReport, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { assessmentsApi, mapAssessmentResToExternal } from '../services/api';
 
 interface ExternalAssessmentViewProps {
@@ -111,6 +111,7 @@ export const ExternalAssessmentView: React.FC<ExternalAssessmentViewProps> = ({ 
 
     const handleSynthesize = async () => {
         if (!activeAssessment) return;
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsSynthesizing(true);
         setError(null);
         try {

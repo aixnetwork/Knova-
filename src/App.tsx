@@ -49,7 +49,8 @@ import {
 
 import { Course, Module, AppView, QuizQuestion, UserStats, UserProfile, UserRole, SubscriptionTier, MicroLesson, CourseStatus, AssessmentResult } from './types';
 import { generateModuleContent, streamModuleContent, generateQuizForModule, generateConceptImage, validateApiKey, generateSpeech } from './services/geminiService';
-import { KnowledgeGraph } from './components/KnowledgeGraph';
+
+import { KnowledgeGraph } from '../components/KnowledgeGraph';
 import { LiveTutor } from './components/LiveTutor';
 import { SimulationView } from './components/SimulationView';
 import { ImpactDashboard } from './components/ImpactDashboard';
@@ -420,7 +421,7 @@ export const App: React.FC = () => {
       case AppView.LANDING: return <LandingPage onEnterApp={handleLogin} onNavigate={setView} />;
       case AppView.ABOUT: return <AboutUs onBack={() => setView(user ? AppView.DASHBOARD : AppView.LANDING)} />;
       case AppView.DASHBOARD: return <DashboardView user={user} courses={courses} stats={stats} storageStatus={storageStatus} justPublishedCourse={justPublishedCourse} onClearPublished={() => setJustPublishedCourse(null)} onSelectCourse={handleSelectCourse} onNavigate={setView} onUpdateCourse={handleUpdateCourse} onEditCourse={handleEditCourse} onDeleteCourse={handleDeleteCourse} setCourseSearch={setCourseSearch} courseSearch={courseSearch} isFeedbackOpen={isFeedbackOpen} setIsFeedbackOpen={setIsFeedbackOpen} onSetCourseToEdit={setCourseToEdit} />;
-      case AppView.CREATOR_STUDIO: return <CreatorStudio onPublishCourse={addCourse} courses={courses} user={user} onNavigateToDashboard={() => setView(AppView.DASHBOARD)} courseToEdit={courseToEdit} onClearEditMode={() => setCourseToEdit(null)} />;
+      case AppView.CREATOR_STUDIO: return <CreatorStudio onPublishCourse={addCourse} courses={courses} user={user} onNavigateToDashboard={() => setView(AppView.DASHBOARD)} onNavigateToTwinLab={() => setView(AppView.TWIN_MANAGER)} courseToEdit={courseToEdit} onClearEditMode={() => setCourseToEdit(null)} />;
       case AppView.TWIN_MANAGER: return <TwinManager />;
       case AppView.SETTINGS: return <SettingsView user={user} onUpdateUser={handleUpdateUser} />;
       case AppView.PUBLIC_AGENT: return embedTwinId ? <PublicAgentRenderer twinId={embedTwinId} /> : null;

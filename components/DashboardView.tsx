@@ -29,7 +29,7 @@ import {
 import { Course, UserStats, UserProfile, UserRole, SubscriptionTier, AppView, CourseStatus } from '../types';
 import { CourseCard } from './CourseCard';
 import { OnboardingAssistant } from './OnboardingAssistant';
-import { generateDailyInsight } from '../services/geminiService';
+import { generateDailyInsight, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { syncEngine, SyncStatus } from '../services/syncService';
 import { DashboardQuickStart } from './DashboardQuickStart';
 import { expertPersonasApi } from '../services/api';
@@ -160,6 +160,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             if (storedInsight) {
                 if (!cancelled) setDailyInsight(storedInsight);
             } else if (user && continueCourse && continueCourse.topic) {
+                if (!requireUserGeminiSessionOrToast()) {
+                    if (!cancelled) setDailyInsight("Set your Gemini API key in Settings → Integrations to unlock AI insights.");
+                    return;
+                }
                 try {
                     const insightKey = `${today}:${user.name}:${continueCourse.topic}`;
                     if (!dailyInsightInFlight.has(insightKey)) {

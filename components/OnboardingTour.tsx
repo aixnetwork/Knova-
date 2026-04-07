@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, ChevronRight, ChevronLeft, Volume2, VolumeX, Loader2, Sparkles, RefreshCw } from 'lucide-react';
 import { AppView, UserProfile } from '../types';
-import { generateSpeech, hasValidKey } from '../services/geminiService';
+import { generateSpeech, isUserGeminiSessionReady, showKnovaToast } from '../services/geminiService';
 
 interface TourStep {
     view: AppView;
@@ -53,7 +53,7 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({ user, onNavigate
     
     const audioContextRef = useRef<AudioContext | null>(null);
     const sourceRef = useRef<AudioBufferSourceNode | null>(null);
-    const hasKey = hasValidKey();
+    const hasKey = isUserGeminiSessionReady();
 
     const step = TOUR_STEPS[currentStep];
 
@@ -93,6 +93,9 @@ export const OnboardingTour: React.FC<OnboardingTourProps> = ({ user, onNavigate
 
     const playStepAudio = async (index: number) => {
         if (!audioEnabled || !hasKey) {
+            if (audioEnabled && !hasKey) {
+                showKnovaToast('Set your Gemini API key first: open Settings, then Integrations, and save your key.');
+            }
             setIsSpeaking(false);
             return;
         }

@@ -6,11 +6,19 @@
 import type { ExpertPersona } from '../types';
 
 const getBaseUrl = (): string => {
-  const url = typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL;
-  return url || 'http://localhost:5000';
+  const envUrl = typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL;
+  if (envUrl && String(envUrl).trim()) return String(envUrl).trim();
+
+  if (typeof window !== 'undefined') {
+    const { hostname, origin } = window.location;
+    const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+    return isLocal ? 'http://localhost:5000' : origin;
+  }
+
+  return 'http://localhost:5000';
 };
 
-const getToken = (): string | null => {
+export const getToken = (): string | null => {
   try {
     return localStorage.getItem('knovatwin_token');
   } catch {
@@ -63,7 +71,19 @@ async function request<T>(
 }
 
 // --- Auth ---
-export type AuthUser = { id: string; email: string; name: string; role: string; title?: string; industry?: string; bio?: string; avatarUrl?: string; createdAt?: string; updatedAt?: string };
+export type AuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  title?: string;
+  industry?: string;
+  bio?: string;
+  avatarUrl?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  hasGeminiKey?: boolean;
+};
 export type AuthResponse = { data: { user: AuthUser; token: string }; message?: string };
 
 export const authApi = {
@@ -91,6 +111,10 @@ export const authApi = {
   me: () => request<AuthUser>('/auth/me'),
   updateMe: (payload: { name?: string; title?: string; industry?: string; bio?: string; avatarUrl?: string }) =>
     request<AuthUser>('/auth/me', { method: 'PATCH', body: JSON.stringify(payload) }),
+  saveMyGeminiKey: (apiKey: string) =>
+    request<{ apiKey: string }>('/auth/me/gemini-key', { method: 'POST', body: JSON.stringify({ apiKey }) }),
+  deleteMyGeminiKey: () => request<{ ok: boolean }>('/auth/me/gemini-key', { method: 'DELETE' }),
+  getMyGeminiKey: () => request<{ apiKey: string }>('/auth/me/gemini-key'),
 };
 
 // --- Feedback ---

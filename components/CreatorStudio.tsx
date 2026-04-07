@@ -7,7 +7,7 @@ import {
     Radio, Volume2, VolumeX
 } from 'lucide-react';
 import { Course, CourseStatus, Module, UserProfile, MarketingAssets, MicroLesson, ExpertPersona, ChatMessage } from '../types';
-import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, getClient, generateSpeech, hasValidKey } from '../services/geminiService';
+import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, isUserGeminiSessionReady, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { LiveTutor } from './LiveTutor';
 
 interface CreatorStudioProps {
@@ -113,7 +113,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     };
 
     const speakQuestion = async (text: string) => {
-        if (!isAudioEnabled || !hasValidKey()) return;
+        if (!isAudioEnabled || !isUserGeminiSessionReady()) return;
 
         stopAudio();
         setIsSpeaking(true);
@@ -267,6 +267,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
 
     const submitAnswerAndNext = async () => {
         if (!currentAnswerDraft.trim()) return;
+        if (!requireUserGeminiSessionOrToast()) return;
 
         const newHistory = [...interviewHistory, { question: currentQuestion, answer: currentAnswerDraft }];
         setInterviewHistory(newHistory);
@@ -285,6 +286,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     };
 
     const handleFinishInterview = async () => {
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsGenerating(true);
         setWizardMode('OUTLINE');
         try {
@@ -303,6 +305,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
 
     const handleGenerateOutline = async () => {
         if (!topic) return;
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsGenerating(true);
         try {
             const result = await generateCourseSyllabus(topic);
@@ -352,7 +355,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
         };
         if (!currentCourseId) setCurrentCourseId(idToUse);
         onPublishCourse(newCourse);
-        onNavigateToDashboard();
+        setWizardMode('MARKETING');
     };
 
     return (
@@ -601,6 +604,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                             <button
                                 onClick={async () => {
                                     if (!topic?.trim()) return;
+                                    if (!requireUserGeminiSessionOrToast()) return;
                                     setIsGenerating(true);
                                     try {
                                         const lesson = await generateMicroLesson(topic);
@@ -711,6 +715,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                             </ul>
                             <button
                                 onClick={async () => {
+                                    if (!requireUserGeminiSessionOrToast()) return;
                                     const context = sources.map(s => s.content).join('\n\n').substring(0, 50000);
                                     setIsGenerating(true);
                                     try {
@@ -760,6 +765,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                 <p className="text-xs text-slate-500 mb-4">An AI-generated audio summary of your course.</p>
                                 <button
                                     onClick={async () => {
+                                        if (!requireUserGeminiSessionOrToast()) return;
                                         setIsGeneratingPodcast(true);
                                         const url = await generateCoursePodcast({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
                                         setPodcastUrl(url);
@@ -782,6 +788,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                 <p className="text-xs text-slate-500 mb-4">A visual asset for social media promotion.</p>
                                 <button
                                     onClick={async () => {
+                                        if (!requireUserGeminiSessionOrToast()) return;
                                         setIsGeneratingFlyer(true);
                                         const url = await generateMarketingFlyer(title, description);
                                         setFlyerUrl(url);
@@ -804,6 +811,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                 <p className="text-xs text-slate-500 mb-4">Slides, infographics, and SEO resources.</p>
                                 <button
                                     onClick={async () => {
+                                        if (!requireUserGeminiSessionOrToast()) return;
                                         setIsGeneratingMarketing(true);
                                         const data = await generateCourseMarketingAssets({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
                                         setMarketingData(data);
@@ -856,6 +864,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                             )}
                                             <button
                                                 onClick={async () => {
+                                                    if (!requireUserGeminiSessionOrToast()) return;
                                                     setTwinAvatarGenerating(true);
                                                     const url = await generatePersonaAvatar({ ...twinConfig, name: twinConfig.name || title });
                                                     setTwinConfig({ ...twinConfig, avatarUrl: url });

@@ -21,51 +21,91 @@ export const COURSE_MODEL = 'gemini-2.5-flash';
 export const IMAGE_MODEL = 'gemini-2.5-flash-image'; 
 export const SPEECH_MODEL = 'gemini-2.5-flash-preview-tts';
 
-// --- Client Management ---
+// --- Client Management (BYOK: logged-in AI uses only session key from DB) ---
 let client: GoogleGenAI | null = null;
+let cachedKeyFingerprint: string | null = null;
+let sessionUserApiKey: string | null = null;
 
-export const getClient = (): GoogleGenAI => {
-    if (!client) {
-        const metaEnv = (import.meta as any)?.env || {};
-        const processEnv = typeof process !== 'undefined' ? process.env : {};
-        const rawKey = metaEnv.VITE_GEMINI_API_KEY ||
-                       metaEnv.GEMINI_API_KEY ||
-                       processEnv.VITE_GEMINI_API_KEY ||
-                       processEnv.GEMINI_API_KEY ||
-                       metaEnv.VITE_API_KEY ||
-                       processEnv.VITE_API_KEY ||
-                       processEnv.API_KEY ||
-                       (typeof localStorage !== 'undefined' ? localStorage.getItem('knovatwin_custom_api_key') : null) ||
-                       '';
-        const apiKey = (rawKey && typeof rawKey === 'string' ? rawKey : '').trim();
-        if (!apiKey) {
-            const msg = 'Gemini API key not set. Add GEMINI_API_KEY or VITE_GEMINI_API_KEY to Knova-/.env.local and restart the dev server, or enter your key in Settings.';
-            console.error(msg);
-            throw new Error(msg);
-        }
-        client = new GoogleGenAI({ apiKey });
-    }
-    return client;
+export const GEMINI_KEY_REQUIRED = 'GEMINI_KEY_REQUIRED';
+
+export const setSessionUserApiKey = (key: string | null) => {
+    sessionUserApiKey = key && key.trim() ? key.trim() : null;
+    client = null;
+    cachedKeyFingerprint = null;
 };
 
-export const hasValidKey = (): boolean => {
+export const clearSessionUserApiKey = () => setSessionUserApiKey(null);
+
+export const isUserGeminiSessionReady = (): boolean =>
+    !!sessionUserApiKey && sessionUserApiKey.trim().length > 0;
+
+/** Optional: legacy localStorage key name (migrated to DB on login). */
+export const LEGACY_LOCAL_STORAGE_KEY = 'knovatwin_custom_api_key';
+
+function readEnvGeminiKeyForPublicFallback(): string {
     const metaEnv = (import.meta as any)?.env || {};
     const processEnv = typeof process !== 'undefined' ? process.env : {};
-    const rawKey = metaEnv.VITE_GEMINI_API_KEY ||
-                   metaEnv.GEMINI_API_KEY ||
-                   processEnv.VITE_GEMINI_API_KEY ||
-                   processEnv.GEMINI_API_KEY ||
-                   metaEnv.VITE_API_KEY ||
-                   processEnv.VITE_API_KEY ||
-                   processEnv.API_KEY ||
-                   localStorage.getItem('knovatwin_custom_api_key') ||
-                   '';
-    return rawKey.trim().length > 0;
-};
+    const raw =
+        metaEnv.VITE_PUBLIC_GEMINI_API_KEY ||
+        metaEnv.VITE_GEMINI_API_KEY ||
+        metaEnv.GEMINI_API_KEY ||
+        processEnv.VITE_PUBLIC_GEMINI_API_KEY ||
+        processEnv.VITE_GEMINI_API_KEY ||
+        processEnv.GEMINI_API_KEY ||
+        metaEnv.VITE_API_KEY ||
+        processEnv.VITE_API_KEY ||
+        processEnv.API_KEY ||
+        '';
+    return (typeof raw === 'string' ? raw : '').trim();
+}
+
+function resolveApiKey(allowEnvFallback: boolean): string {
+    const session = sessionUserApiKey?.trim() || '';
+    if (session) return session;
+    if (allowEnvFallback) {
+        const env = readEnvGeminiKeyForPublicFallback();
+        if (env) return env;
+    }
+    const err = new Error(
+        'Gemini API key not set for your account. Add your key in Settings → Integrations.',
+    );
+    (err as any).code = GEMINI_KEY_REQUIRED;
+    throw err;
+}
+
+function getOrCreateClient(allowEnvFallback: boolean): GoogleGenAI {
+    const apiKey = resolveApiKey(allowEnvFallback);
+    if (!client || cachedKeyFingerprint !== apiKey) {
+        client = new GoogleGenAI({ apiKey });
+        cachedKeyFingerprint = apiKey;
+    }
+    return client;
+}
+
+/** Logged-in app: only the current user's API key (never shared build/env default). */
+export const getClient = (): GoogleGenAI => getOrCreateClient(false);
+
+/** Public embed / unauthenticated twin: user's session key if set, else optional env fallback. */
+export const getPublicGeminiClient = (): GoogleGenAI => getOrCreateClient(true);
+
+/** Whether the signed-in session has a loaded user key (post–DB bootstrap). */
+export const hasValidKey = (): boolean => isUserGeminiSessionReady();
 
 export const resetClient = () => {
     client = null;
+    cachedKeyFingerprint = null;
 };
+
+export function showKnovaToast(message: string): void {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent('knovatwin-app-toast', { detail: { message } }));
+}
+
+export function requireUserGeminiSessionOrToast(): boolean {
+    if (isUserGeminiSessionReady()) return true;
+    showKnovaToast('Set your Gemini API key first: open Settings, then Integrations, and save your key.');
+    return false;
+}
 
 // --- Helper: Extract text from SDK response (handles .text or candidates[].content.parts[].text) ---
 const getResponseText = (response: GenerateContentResponse): string => {
@@ -126,7 +166,59 @@ export const validateApiKey = async (key: string): Promise<{ valid: boolean; err
         });
         return { valid: true };
     } catch (error: any) {
-        return { valid: false, error: error.message || 'Invalid API Key' };
+        const raw = String(error?.message || '');
+        let msg = raw;
+        // SDK errors sometimes include JSON payloads; extract the useful string.
+        if (msg.trim().startsWith('{')) {
+            try {
+                const parsed = JSON.parse(msg);
+                const nested = parsed?.error?.message || parsed?.message || '';
+                if (nested) msg = String(nested);
+            } catch {
+                /* ignore */
+            }
+        }
+        const isQuota =
+            error?.status === 429 ||
+            error?.code === 429 ||
+            msg.includes('429') ||
+            msg.toLowerCase().includes('quota') ||
+            msg.includes('RESOURCE_EXHAUSTED');
+        if (isQuota) {
+            return {
+                valid: false,
+                error: 'Quota exceeded / rate-limited for this Gemini key. Try later or enable billing / increase quota in Google AI Studio.',
+            };
+        }
+        const isUnauthorized =
+            error?.status === 401 ||
+            error?.code === 401 ||
+            msg.toLowerCase().includes('unauthorized') ||
+            msg.toLowerCase().includes('api key invalid') ||
+            msg.toLowerCase().includes('invalid api key');
+        if (isUnauthorized) {
+            return { valid: false, error: 'Invalid API key (unauthorized). Please generate a new Gemini key and try again.' };
+        }
+        const isPermission =
+            error?.status === 403 ||
+            error?.code === 403 ||
+            msg.toLowerCase().includes('permission') ||
+            msg.toLowerCase().includes('forbidden') ||
+            msg.toLowerCase().includes('billing');
+        if (isPermission) {
+            return {
+                valid: false,
+                error: 'Permission / billing issue for this key. Enable billing and required access in Google AI Studio, then try again.',
+            };
+        }
+        const isNetwork =
+            msg.includes('Failed to fetch') ||
+            msg.toLowerCase().includes('network') ||
+            msg.toLowerCase().includes('timeout');
+        if (isNetwork) {
+            return { valid: false, error: 'Network error while testing key. Check internet and try again.' };
+        }
+        return { valid: false, error: msg || 'Invalid API Key' };
     }
 };
 

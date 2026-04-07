@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { LiveServerMessage, Modality } from '@google/genai';
 import { Mic, MicOff, PhoneOff, User, Sparkles, Briefcase, Settings2, Play, ChevronDown, Loader2, Image as ImageIcon, Video, VideoOff, MonitorPlay, BookOpen, RefreshCw, Bot } from 'lucide-react';
-import { EXPERT_PERSONAS, generatePersonaAvatar, getClient } from '../services/geminiService';
+import { EXPERT_PERSONAS, generatePersonaAvatar, getClient, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { ExpertPersona } from '../types';
 import { expertPersonasApi, mapBackendPersonaToExpertPersona, type ExpertPersonaBackend } from '../services/api';
 
@@ -22,12 +22,13 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 interface LiveTutorProps {
   onClose: () => void;
+  onGoToTwinLab?: () => void;
   topic?: string;
   contextContent?: string; // NEW: Pass the actual lesson text here
   customPersona?: ExpertPersona; // NEW: Direct persona injection for testing
 }
 
-export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, topic, contextContent, customPersona }) => {
+export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, onGoToTwinLab, topic, contextContent, customPersona }) => {
   // Load personas from API (Twin Lab agents); no mock until we've tried the API
   const [personas, setPersonas] = useState<ExpertPersona[]>([]);
   const [personasLoaded, setPersonasLoaded] = useState(false);
@@ -159,6 +160,7 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, topic, contextCon
 
   const connectToLiveApi = async () => {
     if (!selectedPersona) return;
+    if (!requireUserGeminiSessionOrToast()) return;
 
     try {
       inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
@@ -501,7 +503,14 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, topic, contextCon
                     <Bot size={48} className="mx-auto mb-4 text-slate-500" />
                     <h3 className="text-lg font-bold text-white mb-2">No Twins yet</h3>
                     <p className="text-slate-400 text-sm mb-6">Create your AI agents in Twin Lab and they will appear here for Live Tutor.</p>
-                    <button type="button" onClick={() => { onClose(); /* parent should switch to Twin Lab */ }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-500">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onGoToTwinLab) onGoToTwinLab();
+                        else onClose();
+                      }}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-500"
+                    >
                       Go to Twin Lab
                     </button>
                   </div>

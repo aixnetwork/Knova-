@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Course, AssessmentQuestion, AssessmentQuestionType, AssessmentResult } from '../types';
-import { generateAssessment, evaluateAssessment } from '../services/geminiService';
+import { generateAssessment, evaluateAssessment, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { Brain, CheckCircle, ChevronRight, AlertCircle, Loader2, Award, XCircle, RotateCcw } from 'lucide-react';
 
 interface SkillsAssessmentProps {
@@ -18,6 +18,7 @@ export const SkillsAssessment: React.FC<SkillsAssessmentProps> = ({ course, onCo
     const [isGenerating, setIsGenerating] = useState(false);
 
     const handleStart = async () => {
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsGenerating(true);
         try {
             // Check if assessment already exists in state, otherwise generate
@@ -52,6 +53,7 @@ export const SkillsAssessment: React.FC<SkillsAssessmentProps> = ({ course, onCo
     };
 
     const submitAssessment = async () => {
+        if (!requireUserGeminiSessionOrToast()) return;
         setStep('EVALUATING');
         try {
             const evalResult = await evaluateAssessment(course, questions, answers);

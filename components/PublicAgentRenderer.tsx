@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, User, Sparkles, Loader2, MessageSquare, AlertCircle, Mic, ChevronLeft } from 'lucide-react';
 import { ExpertPersona, ChatMessage } from '../types';
-import { getClient, EXPERT_PERSONAS } from '../services/geminiService';
+import { getPublicGeminiClient, EXPERT_PERSONAS } from '../services/geminiService';
 import { expertPersonasApi, mapBackendPersonaToExpertPersona } from '../services/api';
 import { GenerateContentResponse } from "@google/genai";
 import { LiveTutor } from './LiveTutor';
@@ -25,7 +25,7 @@ export const PublicAgentRenderer: React.FC<PublicAgentRendererProps> = ({ twinId
         setPersona(p);
         setError(null);
         try {
-            const ai = getClient();
+            const ai = getPublicGeminiClient();
             chatSessionRef.current = ai.chats.create({
                 model: 'gemini-3-flash-preview',
                 config: {

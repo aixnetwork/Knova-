@@ -26,5 +26,6 @@ export function mapAuthUserToProfile(be: AuthUser): UserProfile {
     title: be.title ?? (role === UserRole.ADMIN ? 'Administrator' : role === UserRole.FACILITATOR ? 'Expert' : undefined),
     industry: be.industry,
     bio: be.bio,
+    hasGeminiKey: be.hasGeminiKey === true,
   };
 }

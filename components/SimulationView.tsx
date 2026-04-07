@@ -8,7 +8,7 @@ import {
 import { 
     Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer, Tooltip 
 } from 'recharts';
-import { generateSimulation, evaluateSimulation, SimulationConfig } from '../services/geminiService';
+import { generateSimulation, evaluateSimulation, SimulationConfig, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { SimulationScenario, SimulationFeedback, UserProfile } from '../types';
 
 interface SimulationViewProps {
@@ -64,6 +64,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ topic, user, onC
     }, [topic]);
 
     const loadScenario = async () => {
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsLoading(true);
         setStep('loading');
         try {
@@ -84,6 +85,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ topic, user, onC
 
     const handleSubmit = async () => {
         if (!scenario) return;
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsLoading(true);
         try {
             const result = await evaluateSimulation(scenario, solution, rationale);

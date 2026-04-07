@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { Briefcase, Sparkles, Loader2, CheckCircle, ArrowLeft, Target, MessageSquare, AlertTriangle, List } from 'lucide-react';
-import { generateMeetingPrep } from '../services/geminiService';
+import { generateMeetingPrep, requireUserGeminiSessionOrToast } from '../services/geminiService';
 
 interface MeetingPrepViewProps {
     onClose: () => void;
@@ -15,6 +15,7 @@ export const MeetingPrepView: React.FC<MeetingPrepViewProps> = ({ onClose }) => 
 
     const handleGenerate = async () => {
         if (!context) return;
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsGenerating(true);
         try {
             const data = await generateMeetingPrep(meetingType, context);

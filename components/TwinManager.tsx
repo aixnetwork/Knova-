@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { Bot, Plus, Edit, Code, Trash2, Loader2, Image as ImageIcon } from 'lucide-react';
 import { ExpertPersona } from '../types';
-import { generatePersonaAvatar } from '../services/geminiService';
+import { generatePersonaAvatar, requireUserGeminiSessionOrToast } from '../services/geminiService';
 import { expertPersonasApi, mapBackendPersonaToExpertPersona } from '../services/api';
 
 const isBackendTwinId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
@@ -107,6 +107,7 @@ export const TwinManager: React.FC = () => {
 
     const handleGenerateAvatar = async () => {
         if (!currentTwin) return;
+        if (!requireUserGeminiSessionOrToast()) return;
         setIsGeneratingAvatar(true);
         try {
             const url = await generatePersonaAvatar(currentTwin);

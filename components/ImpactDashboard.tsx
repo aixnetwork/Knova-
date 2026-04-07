@@ -5,7 +5,7 @@ import {
   LineChart, Line, AreaChart, Area, Legend
 } from 'recharts';
 import { TrendingUp, DollarSign, Users, Target, Map as MapIcon, AlertTriangle, Sparkles, Loader2, User, ChevronRight, Calendar, ClipboardList, X } from 'lucide-react';
-import { generateBiceData } from '../services/geminiService';
+import { generateBiceData, requireUserGeminiSessionOrToast } from '../services/geminiService';
 
 interface Employee {
     id: string;
@@ -66,6 +66,7 @@ export const ImpactDashboard: React.FC = () => {
 
     const handleGenerateReport = async () => {
         if (!industry?.trim() || !strategy?.trim()) return;
+        if (!requireUserGeminiSessionOrToast()) return;
         setGenerateError(null);
         setIsGenerating(true);
         setSelectedCell(null);
