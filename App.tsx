@@ -48,7 +48,7 @@ import {
 } from 'lucide-react';
 
 import { Course, Module, AppView, QuizQuestion, UserStats, UserProfile, UserRole, SubscriptionTier, MicroLesson, CourseStatus, AssessmentResult } from './types';
-import { generateModuleContent, streamModuleContent, generateQuizForModule, generateConceptImage, generateSpeech, setSessionUserApiKey, clearSessionUserApiKey, resetClient, LEGACY_LOCAL_STORAGE_KEY } from './services/geminiService';
+import { generateModuleContent, streamModuleContent, generateQuizForModule, generateConceptImage, generateSpeech, setSessionUserApiKey, clearSessionUserApiKey, resetClient, LEGACY_LOCAL_STORAGE_KEY, validateApiKey } from './services/geminiService';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { LiveTutor } from './components/LiveTutor';
 import { SimulationView } from './components/SimulationView';
@@ -294,8 +294,9 @@ export const App: React.FC = () => {
     const [showMobileModuleList, setShowMobileModuleList] = useState(false);
     const [saveSuccess, setSaveSuccess] = useState(false);
     const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-    const [isRecheckingGeminiKey, setIsRecheckingGeminiKey] = useState(false);
-    const [dismissedGeminiGate, setDismissedGeminiGate] = useState(false);
+    const [geminiKeyDraft, setGeminiKeyDraft] = useState('');
+    const [geminiKeyError, setGeminiKeyError] = useState('');
+    const [isValidatingGeminiKey, setIsValidatingGeminiKey] = useState(false);
 
     const [courseSearch, setCourseSearch] = useState('');
     const [focusMode, setFocusMode] = useState(false);
@@ -528,57 +529,49 @@ export const App: React.FC = () => {
     }, [user]);
 
     useEffect(() => {
+        // Hard gate: if the account doesn't have a saved Gemini key, block the app until they validate + save one.
         if (user && user.hasGeminiKey !== true) {
-            if (view === AppView.SETTINGS) {
-                setShowApiKeyModal(false);
-            } else {
-                setShowApiKeyModal(!dismissedGeminiGate);
-            }
+            setShowApiKeyModal(true);
         } else {
             setShowApiKeyModal(false);
+            setGeminiKeyDraft('');
+            setGeminiKeyError('');
+            setIsValidatingGeminiKey(false);
         }
-    }, [user, view, dismissedGeminiGate]);
+    }, [user]);
 
-    const handleOpenSettingsForApiKey = () => {
+    const handleValidateAndSaveGeminiKey = async () => {
+        if (!user) return;
+        const key = geminiKeyDraft.trim();
+        if (!key) return;
+        setIsValidatingGeminiKey(true);
+        setGeminiKeyError('');
         try {
-            sessionStorage.setItem('knovatwin_focus_integrations', '1');
-        } catch {
-            /* ignore */
-        }
-        navigateToView(AppView.SETTINGS);
-    };
+            const check = await validateApiKey(key);
+            if (!check.valid) {
+                setGeminiKeyError(check.error || 'Invalid key. Please try again.');
+                return;
+            }
 
-    const handleDismissGeminiGate = () => {
-        setDismissedGeminiGate(true);
-        setShowApiKeyModal(false);
-    };
-
-    const handleRecheckGeminiKeyAfterSettings = async () => {
-        // User claims they saved the key; let them continue regardless.
-        setDismissedGeminiGate(true);
-        setShowApiKeyModal(false);
-
-        const isGod = user?.id?.startsWith('user-godmode');
-        if (isGod) {
-            const leg = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
-            if (leg?.trim()) {
-                setSessionUserApiKey(leg.trim());
+            const isGod = user.id?.startsWith('user-godmode');
+            if (isGod) {
+                localStorage.setItem(LEGACY_LOCAL_STORAGE_KEY, key);
+                setSessionUserApiKey(key);
                 resetClient();
                 setUser(prev => (prev ? { ...prev, hasGeminiKey: true } : null));
+                return;
             }
-            return;
-        }
-        const token = localStorage.getItem('knovatwin_token');
-        if (!token) return;
-        setIsRecheckingGeminiKey(true);
-        try {
-            const { data } = await authApi.me();
-            const profile = await bootstrapGeminiSession(data);
-            setUser(profile);
-        } catch {
-            /* ignore */
+
+            await authApi.saveMyGeminiKey(key);
+            setSessionUserApiKey(key);
+            resetClient();
+            localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+            setUser(prev => (prev ? { ...prev, hasGeminiKey: true } : null));
+        } catch (e: any) {
+            const msg = String(e?.message || '');
+            setGeminiKeyError(msg || 'Could not validate this key. Please try again.');
         } finally {
-            setIsRecheckingGeminiKey(false);
+            setIsValidatingGeminiKey(false);
         }
     };
 
@@ -586,6 +579,9 @@ export const App: React.FC = () => {
         clearSessionUserApiKey();
         resetClient();
         setUser(null);
+        setGeminiKeyDraft('');
+        setGeminiKeyError('');
+        setIsValidatingGeminiKey(false);
         clearToken();
         localStorage.removeItem('knovatwin_user_session');
         navigateToView(AppView.LANDING);
@@ -1384,41 +1380,48 @@ export const App: React.FC = () => {
                         <div className="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mb-4">
                             <Key size={32} className="text-indigo-600" />
                         </div>
-                        <h2 className="text-2xl font-bold text-slate-900">Expertise key required</h2>
+                        <h2 className="text-2xl font-bold text-slate-900">Expertise Key Required</h2>
                         <p className="text-slate-500 mt-3 text-sm leading-relaxed">
-                            AI features need your own Google Gemini API key. Open <span className="font-semibold text-slate-700">Settings</span>, then the{' '}
-                            <span className="font-semibold text-slate-700">Integrations</span> tab, paste your key, and tap <span className="font-semibold text-slate-700">Save</span>.
-                            Until you do this, other parts of the app stay blocked.
+                            To activate your AI twins and insights, please provide your Google Gemini API key.
+                            Your key is stored locally and used only for your session.
                         </p>
                     </div>
                     <div className="space-y-3">
+                        <div className="space-y-2">
+                            <input
+                                value={geminiKeyDraft}
+                                onChange={(e) => setGeminiKeyDraft(e.target.value)}
+                                placeholder="AIzaSy..."
+                                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                                autoComplete="off"
+                                spellCheck={false}
+                                inputMode="text"
+                            />
+                            {geminiKeyError ? (
+                                <p className="text-xs text-red-600">{geminiKeyError}</p>
+                            ) : null}
+                        </div>
+
                         <button
                             type="button"
-                            onClick={handleOpenSettingsForApiKey}
-                            className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all"
+                            onClick={handleValidateAndSaveGeminiKey}
+                            disabled={isValidatingGeminiKey || !geminiKeyDraft.trim()}
+                            className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all disabled:opacity-60 flex items-center justify-center gap-2"
                         >
-                            Open Settings → Integrations
-                        </button>
-                        <button
-                            type="button"
-                            onClick={handleRecheckGeminiKeyAfterSettings}
-                            disabled={isRecheckingGeminiKey}
-                            className="w-full py-3 rounded-xl font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
-                        >
-                            {isRecheckingGeminiKey ? <Loader2 className="animate-spin w-5 h-5" /> : null}
-                            {isRecheckingGeminiKey ? 'Checking…' : "I've saved my key — continue"}
-                        </button>
-                        <button
-                            type="button"
-                            onClick={handleDismissGeminiGate}
-                            className="w-full py-3 rounded-xl font-semibold text-slate-500 hover:text-slate-700 hover:bg-slate-50 transition-all"
-                        >
-                            Close
+                            {isValidatingGeminiKey ? <Loader2 className="animate-spin w-5 h-5" /> : null}
+                            {isValidatingGeminiKey ? 'Validating…' : 'Validate & Enter'}
                         </button>
                     </div>
+
                     <p className="text-center mt-5 text-xs text-slate-400">
-                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="underline hover:text-indigo-500">
-                            Get a Gemini API key from Google
+                        Don't have a key?{' '}
+                        <a
+                            href="https://aistudio.google.com/app/apikey"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline hover:text-indigo-500 font-semibold"
+                        >
+                            Get one for free here
                         </a>
                     </p>
                 </div>
