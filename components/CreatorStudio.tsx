@@ -7,7 +7,8 @@ import {
     Radio, Volume2, VolumeX
 } from 'lucide-react';
 import { Course, CourseStatus, Module, UserProfile, MarketingAssets, MicroLesson, ExpertPersona, ChatMessage } from '../types';
-import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, isUserGeminiSessionReady, requireUserGeminiSessionOrToast, showKnovaToast } from '../services/geminiService';
+import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, getClient, isUserGeminiSessionReady, requireUserGeminiSessionOrToast, showKnovaToast } from '../services/geminiService';
+import { expertPersonasApi } from '../services/api';
 import { LiveTutor } from './LiveTutor';
 
 interface CreatorStudioProps {
@@ -77,6 +78,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     const testChatSessionRef = useRef<any>(null);
     const testMessagesEndRef = useRef<HTMLDivElement>(null);
     const [showVoiceTest, setShowVoiceTest] = useState(false);
+    const previewInitTimerRef = useRef<any>(null);
 
     const [brainDumpState, setBrainDumpState] = useState<'IDLE' | 'RECORDING' | 'PROCESSING' | 'REVIEW' | 'EDIT'>('IDLE');
     const [interviewHistory, setInterviewHistory] = useState<{ question: string, answer: string }[]>([]);
@@ -89,6 +91,97 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     const recognitionRef = useRef<any>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
     const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+    const isBackendTwinId = (id: string) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    const buildTwinSystemPrompt = () => {
+        const safe = (s?: string | null) => (s || '').trim();
+        const lines: string[] = [];
+        const courseTitle = safe(title) || safe(topic) || 'Untitled Course';
+        const courseDesc = safe(description);
+
+        lines.push(`You are an expert tutor for the course: "${courseTitle}".`);
+        if (courseDesc) lines.push(`Course description: ${courseDesc}`);
+
+        const modules = (generatedModules || []).slice(0, 12);
+        if (modules.length) {
+            lines.push('Course outline (modules):');
+            modules.forEach((m, idx) => {
+                const concepts = (m.keyConcepts || []).filter(Boolean).slice(0, 8);
+                lines.push(
+                    `- Module ${idx + 1}: ${safe(m.title) || 'Untitled'}${concepts.length ? ` (key concepts: ${concepts.join(', ')})` : ''}`
+                );
+                const content = safe(m.content);
+                if (content) lines.push(`  Notes: ${content.substring(0, 600)}`);
+            });
+        }
+
+        // Append whatever the creator typed, but keep it bounded.
+        const creatorPrompt = safe(twinConfig.systemPrompt);
+        if (creatorPrompt) {
+            lines.push('');
+            lines.push('Creator instructions:');
+            lines.push(creatorPrompt);
+        }
+
+        // Hard cap so we don't blow up payload sizes.
+        return lines.join('\n').substring(0, 20000);
+    };
+
+    const getEmbedIframe = (twinId: string) => {
+        const origin = window.location.origin;
+        return `<iframe src="${origin}/embed/${encodeURIComponent(twinId)}" width="100%" height="600" frameborder="0" style="border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);"></iframe>`;
+    };
+
+    const handleTrainAndDeployTwin = async () => {
+        const name = (twinConfig.name || '').trim() || (title || '').trim() || (topic || '').trim();
+        const role = (twinConfig.role || '').trim() || 'Course Guide';
+        const systemPrompt = buildTwinSystemPrompt();
+
+        if (!name) {
+            showKnovaToast('Please add a Twin name (or set a course title/topic) before deploying.');
+            return;
+        }
+
+        setIsTrainingTwin(true);
+        try {
+            const payload = {
+                name,
+                role,
+                systemPrompt,
+                accentColor: twinConfig.accentColor || '#6366f1',
+                voiceName: twinConfig.voiceName || 'Kore',
+                avatarUrl: twinConfig.avatarUrl,
+                yearsExperience: twinConfig.yearsExperience ?? 5,
+            };
+
+            const res = twinConfig.id && isBackendTwinId(twinConfig.id)
+                ? await expertPersonasApi.update(twinConfig.id, payload)
+                : await expertPersonasApi.create(payload);
+
+            const backendTwin = res.data;
+            setTwinConfig((prev) => ({
+                ...prev,
+                id: backendTwin.id,
+                name: backendTwin.name,
+                role: backendTwin.role,
+                systemPrompt: backendTwin.systemPrompt,
+                accentColor: backendTwin.accentColor ?? prev.accentColor,
+                voiceName: backendTwin.voiceName ?? prev.voiceName,
+                yearsExperience: backendTwin.yearsExperience ?? prev.yearsExperience,
+                avatarUrl: backendTwin.avatarUrl ?? prev.avatarUrl,
+            }));
+
+            setEmbedCode(getEmbedIframe(backendTwin.id));
+            showKnovaToast('Twin deployed. Copy the embed code below or open Twin Lab to manage it.');
+        } catch (e: any) {
+            const msg = e?.message || 'Failed to deploy Twin. Please try again.';
+            showKnovaToast(msg);
+        } finally {
+            setIsTrainingTwin(false);
+        }
+    };
 
     // --- Audio Utilities ---
     const decodeRawPcm = async (data: ArrayBuffer, ctx: AudioContext, sampleRate: number = 24000, numChannels: number = 1): Promise<AudioBuffer> => {
@@ -172,6 +265,74 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
             testMessagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
         }
     }, [testChatMessages, isTestTyping]);
+
+    const initTestChatSession = () => {
+        if (!requireUserGeminiSessionOrToast()) return;
+        const name = (twinConfig.name || '').trim() || (title || '').trim() || (topic || '').trim() || 'Expert Twin';
+        const role = (twinConfig.role || '').trim() || 'Course Guide';
+        const sys = buildTwinSystemPrompt();
+        try {
+            const ai = getClient();
+            testChatSessionRef.current = ai.chats.create({
+                model: 'gemini-3-flash-preview',
+                config: {
+                    systemInstruction: `You are ${name}, a ${role}. ${sys}
+CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned to the course and creator instructions.`,
+                },
+            });
+            setTestChatMessages([
+                {
+                    id: 'init',
+                    role: 'model',
+                    text: `Hello! I'm your ${role}. Ask me anything about "${(title || topic || 'your course').toString()}".`,
+                    timestamp: Date.now(),
+                },
+            ]);
+        } catch (e) {
+            showKnovaToast('Could not start Twin Preview chat. Check your Gemini key in Settings.');
+        }
+    };
+
+    const handleSendTestChat = async () => {
+        const text = testChatInput.trim();
+        if (!text) return;
+        if (!testChatSessionRef.current) initTestChatSession();
+        if (!testChatSessionRef.current) return;
+
+        setTestChatInput('');
+        const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: 'user', text, timestamp: Date.now() };
+        setTestChatMessages((prev) => [...prev, userMsg]);
+        setIsTestTyping(true);
+        try {
+            const result = await testChatSessionRef.current.sendMessage({ message: text });
+            const replyText = (result as any)?.text ?? "I couldn't generate a response. Please try again.";
+            const aiMsg: ChatMessage = { id: `a-${Date.now()}`, role: 'model', text: replyText, timestamp: Date.now() };
+            setTestChatMessages((prev) => [...prev, aiMsg]);
+        } catch (e) {
+            setTestChatMessages((prev) => [
+                ...prev,
+                { id: `err-${Date.now()}`, role: 'model', text: 'Preview connection issue. Please retry.', timestamp: Date.now() },
+            ]);
+        } finally {
+            setIsTestTyping(false);
+        }
+    };
+
+    // Initialize / refresh preview chat when entering Twin Lab (debounced).
+    useEffect(() => {
+        if (wizardMode !== 'TWIN_LAB') return;
+        if (showVoiceTest) return;
+        if (activeTwinTab !== 'CHAT') return;
+        if (!isUserGeminiSessionReady()) return;
+
+        if (previewInitTimerRef.current) clearTimeout(previewInitTimerRef.current);
+        previewInitTimerRef.current = setTimeout(() => {
+            initTestChatSession();
+        }, 300);
+        return () => {
+            if (previewInitTimerRef.current) clearTimeout(previewInitTimerRef.current);
+        };
+    }, [wizardMode, activeTwinTab, showVoiceTest, twinConfig.name, twinConfig.role, twinConfig.systemPrompt, title, topic, description, generatedModules]);
 
     const handleAddTextSource = () => {
         if (!tempText.trim()) return;
@@ -928,13 +1089,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                     </div>
 
                                     <button
-                                        onClick={() => {
-                                            setIsTrainingTwin(true);
-                                            setTimeout(() => {
-                                                setIsTrainingTwin(false);
-                                                setEmbedCode(`<iframe src="${window.location.origin}/agent/${currentCourseId}" width="100%" height="600px"></iframe>`);
-                                            }, 2000);
-                                        }}
+                                        onClick={handleTrainAndDeployTwin}
                                         disabled={isTrainingTwin}
                                         className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
                                     >
@@ -944,7 +1099,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                 </div>
                             </div>
 
-                            <div className="bg-slate-50 rounded-2xl border border-slate-200 flex flex-col overflow-hidden">
+                            <div className="bg-slate-50 rounded-2xl border border-slate-200 flex flex-col overflow-hidden h-[550px]">
                                 <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-white">
                                     <h3 className="text-sm font-bold text-slate-700">Twin Preview</h3>
                                     <div className="flex bg-slate-100 p-1 rounded-lg">
@@ -962,15 +1117,35 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                         </button>
                                     </div>
                                 </div>
-                                <div className="flex-1 p-4 overflow-y-auto min-h-[400px]">
+                                <div className="flex-1 min-h-0 p-4 overflow-y-auto">
                                     {activeTwinTab === 'CHAT' ? (
                                         <div className="space-y-4">
-                                            <div className="flex justify-start">
-                                                <div className="bg-white p-3 rounded-2xl rounded-tl-none border border-slate-200 text-sm text-slate-600 max-w-[80%] shadow-sm">
-                                                    Hello! I'm your expert twin. How can I help you today?
+                                            {testChatMessages.length === 0 ? (
+                                                <div className="flex justify-start">
+                                                    <div className="bg-white p-3 rounded-2xl rounded-tl-none border border-slate-200 text-sm text-slate-600 max-w-[80%] shadow-sm">
+                                                        Preview is ready. Ask a question below.
+                                                    </div>
                                                 </div>
-                                            </div>
-                                            {/* Simulated chat messages would go here */}
+                                            ) : null}
+
+                                            {testChatMessages.map((m) => (
+                                                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                                    <div className={`p-3 rounded-2xl border text-sm max-w-[80%] shadow-sm ${m.role === 'user'
+                                                        ? 'bg-indigo-600 text-white border-indigo-600 rounded-tr-none'
+                                                        : 'bg-white text-slate-700 border-slate-200 rounded-tl-none'
+                                                    } break-words whitespace-pre-wrap`}>
+                                                        {m.text}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            {isTestTyping ? (
+                                                <div className="flex justify-start">
+                                                    <div className="bg-white p-3 rounded-2xl rounded-tl-none border border-slate-200 text-sm text-slate-500 max-w-[80%] shadow-sm flex items-center gap-2">
+                                                        <Loader2 size={16} className="animate-spin" /> Thinking…
+                                                    </div>
+                                                </div>
+                                            ) : null}
+                                            <div ref={testMessagesEndRef} />
                                         </div>
                                     ) : (
                                         <div className="flex flex-col items-center justify-center h-full text-center space-y-6 py-12">
@@ -981,20 +1156,56 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                                                 <h4 className="font-bold text-slate-900">Voice Interface Ready</h4>
                                                 <p className="text-xs text-slate-500">Speak to your twin in real-time.</p>
                                             </div>
-                                            <button className="px-6 py-2 bg-indigo-600 text-white rounded-full font-bold text-sm shadow-lg shadow-indigo-200">
+                                            <button
+                                                onClick={() => {
+                                                    if (!requireUserGeminiSessionOrToast()) return;
+                                                    setShowVoiceTest(true);
+                                                }}
+                                                className="px-6 py-2 bg-indigo-600 text-white rounded-full font-bold text-sm shadow-lg shadow-indigo-200"
+                                            >
                                                 Start Conversation
                                             </button>
                                         </div>
                                     )}
                                 </div>
-                                <div className="p-4 bg-white border-t border-slate-200">
+                                <div className="p-4 bg-white border-t border-slate-200 shrink-0">
                                     <div className="flex gap-2">
-                                        <input type="text" placeholder="Test your twin..." className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500" />
-                                        <button className="p-2 bg-indigo-600 text-white rounded-lg"><Send size={18} /></button>
+                                        <input
+                                            type="text"
+                                            value={testChatInput}
+                                            onChange={(e) => setTestChatInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === 'Enter' && handleSendTestChat()}
+                                            placeholder="Test your twin..."
+                                            className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500"
+                                            disabled={activeTwinTab !== 'CHAT' || isTestTyping}
+                                        />
+                                        <button
+                                            onClick={handleSendTestChat}
+                                            disabled={activeTwinTab !== 'CHAT' || isTestTyping || !testChatInput.trim()}
+                                            className="p-2 bg-indigo-600 text-white rounded-lg disabled:opacity-50"
+                                        >
+                                            <Send size={18} />
+                                        </button>
                                     </div>
                                 </div>
                             </div>
                         </div>
+
+                        {showVoiceTest ? (
+                            <div className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                                <div className="w-full max-w-5xl h-[85vh] bg-slate-900 rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
+                                    <LiveTutor
+                                        onClose={() => setShowVoiceTest(false)}
+                                        customPersona={{
+                                            ...twinConfig,
+                                            name: (twinConfig.name || '').trim() || (title || '').trim() || (topic || '').trim() || 'Expert Twin',
+                                            role: (twinConfig.role || '').trim() || 'Course Guide',
+                                            systemPrompt: buildTwinSystemPrompt(),
+                                        }}
+                                    />
+                                </div>
+                            </div>
+                        ) : null}
 
                         {embedCode && (
                             <div className="mt-8 p-6 bg-slate-900 rounded-2xl text-white">

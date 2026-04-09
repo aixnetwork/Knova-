@@ -50,15 +50,13 @@ export const PublicAgentRenderer: React.FC<PublicAgentRendererProps> = ({ twinId
             initPersonaAndChat(found);
             return;
         }
-        expertPersonasApi.list()
+        expertPersonasApi.getById(twinId)
             .then(({ data }) => {
-                if (!Array.isArray(data)) {
+                if (!data) {
                     setError("Expert Twin not found.");
                     return;
                 }
-                const match = data.find((p: { id: string }) => p.id === twinId);
-                if (match) initPersonaAndChat(mapBackendPersonaToExpertPersona(match));
-                else setError("Expert Twin not found.");
+                initPersonaAndChat(mapBackendPersonaToExpertPersona(data as any));
             })
             .catch(() => setError("Expert Twin not found."));
     }, [twinId]);
