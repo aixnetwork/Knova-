@@ -480,10 +480,11 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, onGoToTwinLab, to
   
   if (!selectedPersona) {
       return (
-        <div className="fixed inset-0 z-50 bg-slate-900/95 backdrop-blur flex flex-col items-center justify-center p-4 md:p-8 text-white overflow-y-auto">
-            <button onClick={onClose} className="absolute top-4 right-4 md:top-8 md:right-8 p-2 hover:bg-white/10 rounded-full"><PhoneOff /></button>
-            <div className="max-w-5xl w-full flex flex-col items-center my-auto">
-                <h2 className="text-2xl md:text-3xl font-bold mb-2 text-center mt-12 md:mt-0">Knowledge Twin Selection</h2>
+        <div className="fixed inset-0 z-50 bg-slate-900/95 backdrop-blur overflow-y-auto">
+            <button onClick={onClose} className="fixed top-4 right-4 md:top-8 md:right-8 p-2 hover:bg-white/10 rounded-full text-white z-10"><PhoneOff /></button>
+            <div className="min-h-full w-full flex justify-center px-4 pb-8 pt-16 md:px-8 md:pt-8">
+              <div className="max-w-6xl w-full flex flex-col items-center">
+                <h2 className="text-2xl md:text-3xl font-bold mb-2 text-center text-white">Knowledge Twin Selection</h2>
                 <p className="text-slate-400 mb-4 text-center max-w-xl text-sm md:text-base">
                     Don't just learn the theory. Consult with our digital experts who have decades of simulated "Tribal Knowledge" and experience.
                 </p>
@@ -515,12 +516,12 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, onGoToTwinLab, to
                     </button>
                   </div>
                 )}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full pb-8">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 md:gap-6 w-full pb-8">
                     {personasLoaded && personas.length > 0 && personas.map(persona => (
                         <div 
                             key={persona.id}
                             onClick={() => setSelectedPersona(persona)}
-                            className="bg-slate-800 border border-slate-700 p-6 rounded-2xl cursor-pointer hover:bg-slate-750 hover:border-indigo-500 transition-all group relative flex flex-col"
+                            className="bg-slate-800 border border-slate-700 p-5 md:p-6 rounded-2xl cursor-pointer hover:bg-slate-750 hover:border-indigo-500 transition-all group relative flex flex-col"
                         >
                             <div className="relative mx-auto mb-4 group/avatar">
                                 <div 
@@ -546,7 +547,7 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, onGoToTwinLab, to
                                 </div>
                             </div>
 
-                            <h3 className="text-xl font-bold text-center">{persona.name}</h3>
+                            <h3 className="text-xl font-bold text-center text-white">{persona.name}</h3>
                             <p className="text-indigo-400 text-sm font-medium mb-2 text-center">{persona.role}</p>
                             <div className="flex items-center justify-center gap-2 text-xs text-slate-400 mb-4">
                                 <Briefcase size={12} /> {persona.yearsExperience} years exp.
@@ -563,6 +564,7 @@ export const LiveTutor: React.FC<LiveTutorProps> = ({ onClose, onGoToTwinLab, to
                         </div>
                     ))}
                 </div>
+              </div>
             </div>
         </div>
       );
