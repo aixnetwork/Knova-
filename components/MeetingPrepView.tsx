@@ -22,7 +22,7 @@ export const MeetingPrepView: React.FC<MeetingPrepViewProps> = ({ onClose }) => 
             setPrepData(data);
         } catch (e) {
             console.error(e);
-            alert("Failed to generate prep. Please try again.");
+            // alert("Failed to generate prep. Please try again.");
         } finally {
             setIsGenerating(false);
         }

@@ -15,6 +15,9 @@ class SyncService {
 
     subscribe(callback: (status: SyncStatus) => void) {
         this.subscribers.push(callback);
+        return () => {
+            this.subscribers = this.subscribers.filter(subscriber => subscriber !== callback);
+        };
     }
 
     private notify() {

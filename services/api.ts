@@ -3,7 +3,7 @@
  * All FE → BE requests go through this module.
  */
 
-import type { ExpertPersona } from '../types';
+import type { ExpertPersona, MarketingAssets } from '../types';
 
 const getBaseUrl = (): string => {
   const envUrl = typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BASE_URL;
@@ -214,7 +214,23 @@ export const adminApi = {
 };
 
 // --- Courses ---
-export type CourseRes = { id: string; title?: string; topic: string; description: string; status?: string; modules?: CourseModuleRes[] };
+export type CourseAssetsRes = {
+  flyerUrl?: string | null;
+  podcastUrl?: string | null;
+  salesSlides?: MarketingAssets['slides'] | null;
+  infographic?: MarketingAssets['infographic'] | null;
+  youtubeResources?: MarketingAssets['youtubeResources'] | null;
+};
+
+export type CourseRes = {
+  id: string;
+  title?: string;
+  topic: string;
+  description: string;
+  status?: string;
+  modules?: CourseModuleRes[];
+  assets?: CourseAssetsRes | null;
+};
 
 export type CourseModuleRes = { id: string; name: string; description?: string | null; keyConcepts: string[]; content?: string | null };
 
@@ -228,6 +244,21 @@ export const coursesApi = {
   delete: (id: string) => request<unknown>(`/courses/${id}`, { method: 'DELETE' }),
   updateModuleContent: (courseId: string, moduleId: string, payload: { content: string }) =>
     request<CourseModuleRes>(`/courses/${courseId}/modules/${moduleId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  saveAssets: (
+    id: string,
+    payload: {
+      flyerUrl?: string | null;
+      podcastUrl?: string | null;
+      slides?: MarketingAssets['slides'];
+      infographic?: MarketingAssets['infographic'];
+      youtubeResources?: MarketingAssets['youtubeResources'];
+    }
+  ) => request<CourseRes>(`/courses/${id}/assets`, { method: 'PUT', body: JSON.stringify(payload) }),
+  uploadFlyer: (id: string, payload: { imageData: string }) =>
+    request<{ flyerUrl: string; course: CourseRes }>(`/courses/${id}/flyer-upload`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 };
 
 // --- Enrollments ---

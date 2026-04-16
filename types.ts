@@ -6,6 +6,12 @@ export interface MarketingAssets {
     generatedAt: number;
 }
 
+export interface SavedCourseAssets {
+  flyerUrl?: string;
+  podcastUrl?: string;
+  marketingData?: MarketingAssets;
+}
+
 export enum UserRole {
   LEARNER = 'LEARNER',
   FACILITATOR = 'FACILITATOR',
@@ -110,6 +116,7 @@ export interface Course {
   reviewCount?: number;
   status?: CourseStatus;
   thumbnailUrl?: string;
+  savedAssets?: SavedCourseAssets;
   isDefault?: boolean;
   assessmentResult?: AssessmentResult;
 }

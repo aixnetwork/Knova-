@@ -7,12 +7,13 @@ import {
     Radio, Volume2, VolumeX
 } from 'lucide-react';
 import { Course, CourseStatus, Module, UserProfile, MarketingAssets, MicroLesson, ExpertPersona, ChatMessage } from '../types';
-import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, getClient, isUserGeminiSessionReady, requireUserGeminiSessionOrToast, showKnovaToast } from '../services/geminiService';
-import { expertPersonasApi } from '../services/api';
+import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, getClient, getErrorMessage, isUserGeminiSessionReady, requireUserGeminiSessionOrToast, showKnovaToast } from '../services/geminiService';
+import { coursesApi, expertPersonasApi } from '../services/api';
 import { LiveTutor } from './LiveTutor';
 
 interface CreatorStudioProps {
-    onPublishCourse: (course: Course) => void;
+    onPublishCourse: (course: Course) => Promise<Course>;
+    onUpdateCourse: (courseId: string, updates: Partial<Course>) => void;
     courses: Course[];
     user: UserProfile | null;
     onNavigateToDashboard: () => void;
@@ -29,6 +30,7 @@ interface SourceItem {
 
 export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     onPublishCourse,
+    onUpdateCourse,
     onNavigateToDashboard,
     user,
     courseToEdit,
@@ -55,6 +57,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     const [isGeneratingPodcast, setIsGeneratingPodcast] = useState(false);
     const [isGeneratingFlyer, setIsGeneratingFlyer] = useState(false);
     const [showMarketingModal, setShowMarketingModal] = useState(false);
+    const [isSavingAssets, setIsSavingAssets] = useState(false);
 
     const [microLesson, setMicroLesson] = useState<MicroLesson | null>(null);
 
@@ -94,6 +97,101 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
 
     const isBackendTwinId = (id: string) =>
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    const isBackendCourseId = (id: string) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    useEffect(() => {
+        if (!courseToEdit) return;
+        setCurrentCourseId(courseToEdit.id || '');
+        setTopic(courseToEdit.topic || '');
+        setTitle(courseToEdit.title || '');
+        setDescription(courseToEdit.description || '');
+        setGeneratedModules(courseToEdit.modules || []);
+        setMarketingData(courseToEdit.savedAssets?.marketingData || null);
+        setPodcastUrl(courseToEdit.savedAssets?.podcastUrl || null);
+        setFlyerUrl(courseToEdit.savedAssets?.flyerUrl || null);
+        if (courseToEdit.savedAssets?.marketingData || courseToEdit.savedAssets?.flyerUrl || courseToEdit.savedAssets?.podcastUrl) {
+            setWizardMode('MARKETING');
+        }
+    }, [courseToEdit]);
+
+    const saveAssetsToDatabase = async (overrides?: {
+        flyerUrl?: string | null;
+        podcastUrl?: string | null;
+        marketingData?: MarketingAssets | null;
+    }) => {
+        const courseId = currentCourseId || courseToEdit?.id;
+        if (!courseId || !isBackendCourseId(courseId)) {
+            showKnovaToast('Please publish the course first so assets can be saved in the database.');
+            return null;
+        }
+
+        const nextFlyerUrl = overrides?.flyerUrl !== undefined ? overrides.flyerUrl : flyerUrl;
+        const nextPodcastUrl = overrides?.podcastUrl !== undefined ? overrides.podcastUrl : podcastUrl;
+        const nextMarketingData = overrides?.marketingData !== undefined ? overrides.marketingData : marketingData;
+
+        setIsSavingAssets(true);
+        try {
+            const { data } = await coursesApi.saveAssets(courseId, {
+                flyerUrl: nextFlyerUrl || null,
+                podcastUrl: nextPodcastUrl || null,
+                slides: nextMarketingData?.slides || [],
+                infographic: nextMarketingData?.infographic || [],
+                youtubeResources: nextMarketingData?.youtubeResources || [],
+            });
+
+            const savedMarketingData = nextMarketingData ? {
+                ...nextMarketingData,
+                generatedAt: nextMarketingData.generatedAt || Date.now(),
+            } : undefined;
+
+            onUpdateCourse(courseId, {
+                thumbnailUrl: nextFlyerUrl || undefined,
+                savedAssets: {
+                    flyerUrl: nextFlyerUrl || undefined,
+                    podcastUrl: nextPodcastUrl || undefined,
+                    marketingData: savedMarketingData,
+                },
+            });
+
+            if (data?.assets?.flyerUrl) setFlyerUrl(data.assets.flyerUrl);
+            if (data?.assets?.podcastUrl) setPodcastUrl(data.assets.podcastUrl);
+            showKnovaToast('Assets saved to database.');
+            return data;
+        } catch (e: any) {
+            showKnovaToast(e?.message || 'Could not save assets right now.');
+            return null;
+        } finally {
+            setIsSavingAssets(false);
+        }
+    };
+
+    const uploadFlyerToCloudinary = async (imageData: string) => {
+        const courseId = currentCourseId || courseToEdit?.id;
+        if (!courseId || !isBackendCourseId(courseId)) {
+            showKnovaToast('Please publish the course first so the flyer can be uploaded.');
+            return null;
+        }
+
+        const { data } = await coursesApi.uploadFlyer(courseId, { imageData });
+        const uploadedFlyerUrl = data?.flyerUrl || data?.course?.assets?.flyerUrl || null;
+        if (!uploadedFlyerUrl) {
+            throw new Error('Cloudinary upload succeeded but no flyer URL was returned.');
+        }
+
+        onUpdateCourse(courseId, {
+            thumbnailUrl: uploadedFlyerUrl,
+            savedAssets: {
+                flyerUrl: uploadedFlyerUrl,
+                podcastUrl: podcastUrl || undefined,
+                marketingData: marketingData || undefined,
+            },
+        });
+
+        setFlyerUrl(uploadedFlyerUrl);
+        return uploadedFlyerUrl;
+    };
 
     const buildTwinSystemPrompt = () => {
         const safe = (s?: string | null) => (s || '').trim();
@@ -458,7 +556,8 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
             setDescription(result.description || description);
             setGeneratedModules(result.modules?.map((m: any, i: number) => ({ ...m, id: `mod-${Date.now()}-${i}`, isCompleted: false })) || []);
         } catch (e) {
-            alert("Failed to generate outline.");
+            showKnovaToast(getErrorMessage(e));
+            setWizardMode('BRAIN_DUMP');
         } finally {
             setIsGenerating(false);
         }
@@ -474,12 +573,14 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
             setDescription(result.description || '');
             setGeneratedModules(result.modules?.map((m: any, i: number) => ({ ...m, id: `mod-${Date.now()}-${i}`, isCompleted: false })) || []);
             setWizardMode('OUTLINE');
+        } catch (e) {
+            showKnovaToast(getErrorMessage(e));
         } finally {
             setIsGenerating(false);
         }
     };
 
-    const handleSaveDraft = () => {
+    const handleSaveDraft = async () => {
         const idToUse = currentCourseId || courseToEdit?.id || `course-${Date.now()}`;
         const newCourse: Course = {
             ...courseToEdit,
@@ -494,12 +595,12 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
             status: CourseStatus.DRAFT,
             isDefault: courseToEdit?.isDefault || false
         };
-        if (!currentCourseId) setCurrentCourseId(idToUse);
-        onPublishCourse(newCourse);
+        const savedCourse = await onPublishCourse(newCourse);
+        setCurrentCourseId(savedCourse.id);
         alert("Draft saved successfully.");
     };
 
-    const handlePublish = () => {
+    const handlePublish = async () => {
         const idToUse = currentCourseId || courseToEdit?.id || `course-${Date.now()}`;
         const newCourse: Course = {
             ...courseToEdit,
@@ -514,8 +615,8 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
             status: CourseStatus.PUBLISHED,
             isDefault: courseToEdit?.isDefault || false
         };
-        if (!currentCourseId) setCurrentCourseId(idToUse);
-        onPublishCourse(newCourse);
+        const savedCourse = await onPublishCourse(newCourse);
+        setCurrentCourseId(savedCourse.id);
         setWizardMode('MARKETING');
     };
 
@@ -591,6 +692,11 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                         <button onClick={handlePublish} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
                             Publish course
                         </button>
+                        {(marketingData || flyerUrl || podcastUrl) && (
+                            <button onClick={() => setWizardMode('MARKETING')} className="px-4 py-2 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+                                <Eye size={16} /> View saved assets
+                            </button>
+                        )}
                     </div>
                 </div>
             )}
@@ -844,7 +950,7 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                 onChange={handleFileUpload}
                                 className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-emerald-50 file:text-emerald-700"
                             />
-                            <p className="text-xs text-slate-500">Supported: .txt, .md, .json. Content will be used as course source.</p>
+                             {/*  <p className="text-xs text-slate-500">Supported: .txt, .md, .json. Content will be used as course source.</p> */}
                         </div>
                     )}
                     {activeImportTab === 'CLOUD' && (
@@ -887,7 +993,7 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                         setWizardMode('OUTLINE');
                                     } catch (e) {
                                         console.error(e);
-                                        alert('Failed to generate outline from sources.');
+                                        showKnovaToast(getErrorMessage(e));
                                     } finally {
                                         setIsGenerating(false);
                                     }
@@ -928,9 +1034,16 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                     onClick={async () => {
                                         if (!requireUserGeminiSessionOrToast()) return;
                                         setIsGeneratingPodcast(true);
-                                        const url = await generateCoursePodcast({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
-                                        setPodcastUrl(url);
-                                        setIsGeneratingPodcast(false);
+                                        try {
+                                            const url = await generateCoursePodcast({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
+                                            if (!url) throw new Error('Podcast generation failed.');
+                                            setPodcastUrl(url);
+                                            await saveAssetsToDatabase({ podcastUrl: url });
+                                        } catch (e) {
+                                            showKnovaToast(getErrorMessage(e));
+                                        } finally {
+                                            setIsGeneratingPodcast(false);
+                                        }
                                     }}
                                     disabled={isGeneratingPodcast}
                                     className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
@@ -951,9 +1064,20 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                     onClick={async () => {
                                         if (!requireUserGeminiSessionOrToast()) return;
                                         setIsGeneratingFlyer(true);
-                                        const url = await generateMarketingFlyer(title, description);
-                                        setFlyerUrl(url);
-                                        setIsGeneratingFlyer(false);
+                                        try {
+                                            const generatedImageData = await generateMarketingFlyer(title, description);
+                                            if (!generatedImageData) throw new Error('Flyer generation failed.');
+                                            setFlyerUrl(generatedImageData);
+                                            const uploadedUrl = await uploadFlyerToCloudinary(generatedImageData);
+                                            if (!uploadedUrl) {
+                                                throw new Error('Please publish the course first so the flyer can be uploaded.');
+                                            }
+                                            showKnovaToast('Flyer uploaded and saved.');
+                                        } catch (e) {
+                                            showKnovaToast(getErrorMessage(e));
+                                        } finally {
+                                            setIsGeneratingFlyer(false);
+                                        }
                                     }}
                                     disabled={isGeneratingFlyer}
                                     className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
@@ -973,13 +1097,17 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                 <button
                                     onClick={async () => {
                                         if (!requireUserGeminiSessionOrToast()) return;
+                                        if (marketingData) {
+                                            setShowMarketingModal(true);
+                                            return;
+                                        }
                                         setIsGeneratingMarketing(true);
                                         try {
                                             const data = await generateCourseMarketingAssets({ id: currentCourseId, title, topic, description, modules: generatedModules, authorName: user?.name || '', status: CourseStatus.PUBLISHED, progress: 0, createdAt: Date.now(), isDefault: false });
                                             setMarketingData(data);
                                             setShowMarketingModal(true);
-                                        } catch {
-                                            showKnovaToast('Could not load sales assets. Try again in a moment.');
+                                        } catch (e) {
+                                            showKnovaToast(getErrorMessage(e));
                                         } finally {
                                             setIsGeneratingMarketing(false);
                                         }
@@ -988,7 +1116,7 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                     className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
                                 >
                                     {isGeneratingMarketing ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-                                    View Assets
+                                    {marketingData ? 'View Assets' : 'View Assets'}
                                 </button>
                             </div>
                         </div>
@@ -1330,6 +1458,24 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                     ))}
                                 </div>
                             </section>
+                        </div>
+                        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50">
+                            <button
+                                type="button"
+                                onClick={() => setShowMarketingModal(false)}
+                                className="px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
+                            >
+                                Close
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => saveAssetsToDatabase()}
+                                disabled={isSavingAssets}
+                                className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700 transition-colors disabled:opacity-60 flex items-center gap-2"
+                            >
+                                {isSavingAssets ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                                Save assets
+                            </button>
                         </div>
                     </div>
                 </div>

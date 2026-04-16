@@ -17,7 +17,7 @@ import {
 } from '../types';
 
 export const COURSE_MODEL = 'gemini-2.5-flash';
-// According to guidelines, default to gemini-2.5-flash-image using generateContent
+// According to guidelines, default to gemini-2.5-flash -image using generateContent
 export const IMAGE_MODEL = 'gemini-2.5-flash-image'; 
 export const SPEECH_MODEL = 'gemini-2.5-flash-preview-tts';
 
@@ -96,9 +96,55 @@ export const resetClient = () => {
     cachedKeyFingerprint = null;
 };
 
+let lastToastMessage = '';
+let lastToastAt = 0;
+
 export function showKnovaToast(message: string): void {
     if (typeof window === 'undefined') return;
+    const next = (message || '').trim();
+    const now = Date.now();
+    if (next && next === lastToastMessage && now - lastToastAt < 2500) {
+        return;
+    }
+    lastToastMessage = next;
+    lastToastAt = now;
     window.dispatchEvent(new CustomEvent('knovatwin-app-toast', { detail: { message } }));
+}
+
+export function getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message?.trim()) {
+        const raw = error.message.trim();
+        if (raw.startsWith('{')) {
+            try {
+                const parsed = JSON.parse(raw);
+                return (
+                    parsed?.error?.message ||
+                    parsed?.message ||
+                    raw
+                );
+            } catch {
+                return raw;
+            }
+        }
+        return raw;
+    }
+
+    if (typeof error === 'string' && error.trim()) return error.trim();
+
+    try {
+        const raw = JSON.stringify(error);
+        if (raw && raw !== '{}') return raw;
+    } catch {
+        /* ignore */
+    }
+
+    return 'Request failed.';
+}
+
+function notifyGeminiError(error: unknown): string {
+    const message = getErrorMessage(error);
+    showKnovaToast(message);
+    return message;
 }
 
 export function requireUserGeminiSessionOrToast(): boolean {
@@ -139,7 +185,7 @@ const cleanJson = (text: string): string => {
 };
 
 // Helper for retries
-export const retryOperation = async <T>(operation: () => Promise<T>, retries = 3, delayMs = 2000): Promise<T> => {
+export const retryOperation = async <T>(operation: () => Promise<T>, retries = 0, delayMs = 2000): Promise<T> => {
     try {
         return await operation();
     } catch (error: any) {
@@ -162,7 +208,7 @@ export const retryOperation = async <T>(operation: () => Promise<T>, retries = 3
             await new Promise(resolve => setTimeout(resolve, waitTime));
             return retryOperation(operation, retries - 1, waitTime * 2);
         }
-        throw error;
+        throw new Error(notifyGeminiError(error));
     }
 };
 
@@ -334,6 +380,7 @@ export const streamModuleContent = async (
         return fullText || "No content generated.";
     } catch (e) {
         console.error("Streaming failed", e);
+        notifyGeminiError(e);
         return "Failed to generate content. Please try again.";
     }
 };
@@ -370,7 +417,7 @@ export const generateQuizForModule = async (courseTopic: string, moduleTitle: st
 export const generateConceptImage = async (prompt: string): Promise<string | undefined> => {
     const ai = getClient();
     try {
-        // Use gemini-2.5-flash-image with generateContent as per guidelines
+        // Use gemini-2.5-flash -image with generateContent as per guidelines
         const response = await ai.models.generateContent({
             model: IMAGE_MODEL,
             contents: {
@@ -397,6 +444,7 @@ export const generateConceptImage = async (prompt: string): Promise<string | und
         return undefined;
     } catch (e) {
         console.error("Image gen failed", e);
+        notifyGeminiError(e);
         return undefined;
     }
 };
@@ -416,7 +464,7 @@ export const generateMarketingFlyer = async (title: string, topic: string): Prom
                     aspectRatio: "3:4"
                 }
             }
-        })) as GenerateContentResponse;
+        }), 0) as GenerateContentResponse;
 
         // Iterate through parts to find image
         if (response.candidates?.[0]?.content?.parts) {
@@ -428,6 +476,7 @@ export const generateMarketingFlyer = async (title: string, topic: string): Prom
         }
     } catch (e) {
         console.error("Flyer gen failed", e);
+        throw new Error(getErrorMessage(e));
     }
     return null;
 };
@@ -452,6 +501,7 @@ export const generateSpeech = async (text: string): Promise<ArrayBuffer | null> 
         }
     } catch (e) {
         console.error("Speech gen failed", e);
+        notifyGeminiError(e);
     }
     return null;
 };
@@ -463,7 +513,7 @@ export const generateCoursePodcast = async (course: Course): Promise<string | nu
         const scriptResp = await retryOperation(() => ai.models.generateContent({
             model: COURSE_MODEL,
             contents: scriptPrompt
-        })) as GenerateContentResponse;
+        }), 0) as GenerateContentResponse;
         const script = scriptResp.text;
         
         if(!script) return null;
@@ -482,7 +532,7 @@ export const generateCoursePodcast = async (course: Course): Promise<string | nu
                     }
                 }
             }
-        })) as GenerateContentResponse;
+        }), 0) as GenerateContentResponse;
          const base64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
          if(base64) {
              const pcmData = base64ToArrayBuffer(base64);
@@ -491,6 +541,7 @@ export const generateCoursePodcast = async (course: Course): Promise<string | nu
          }
     } catch(e) {
         console.error("Podcast gen failed", e);
+        throw new Error(getErrorMessage(e));
     }
     return null;
 };
@@ -554,7 +605,7 @@ export const generateCourseMarketingAssets = async (course: Course): Promise<Mar
                     required: ['slides', 'infographic', 'youtubeResources']
                 }
             }
-        })) as GenerateContentResponse;
+        }), 0) as GenerateContentResponse;
         
         const raw = getResponseText(response);
         const data = JSON.parse(cleanJson(raw || '{}'));
@@ -567,7 +618,7 @@ export const generateCourseMarketingAssets = async (course: Course): Promise<Mar
         };
     } catch (e) {
         console.error("Marketing generation failed", e);
-        throw e;
+        throw new Error(getErrorMessage(e));
     }
 };
 
@@ -638,6 +689,7 @@ export const generateNextInterviewQuestion = async (history: { question: string,
         return response.text?.trim() || "Can you give me a specific example of that?";
     } catch (e) {
         console.error("Interview gen failed", e);
+        notifyGeminiError(e);
         return "That's interesting. Can you tell me more about the practical application?";
     }
 };
@@ -661,46 +713,50 @@ export const generateCourseSyllabus = async (topic: string, context?: string): P
     - content (the FULL lesson body for this module: 2-5 paragraphs of teaching content in markdown, so learners see the same content every time without further generation)
   `;
   
-  const response = await retryOperation(() => ai.models.generateContent({
-    model: COURSE_MODEL,
-    contents: prompt,
-    config: {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          description: { type: Type.STRING },
-          modules: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                description: { type: Type.STRING },
-                keyConcepts: { type: Type.ARRAY, items: { type: Type.STRING } },
-                content: { type: Type.STRING }
-              },
-              required: ['title', 'description', 'keyConcepts', 'content']
+  try {
+    const response = await retryOperation(() => ai.models.generateContent({
+      model: COURSE_MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            description: { type: Type.STRING },
+            modules: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  keyConcepts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  content: { type: Type.STRING }
+                },
+                required: ['title', 'description', 'keyConcepts', 'content']
+              }
             }
-          }
-        },
-        required: ['title', 'description', 'modules']
+          },
+          required: ['title', 'description', 'modules']
+        }
       }
+    }), 0) as GenerateContentResponse;
+    
+    const rawText = getResponseText(response);
+    const data = JSON.parse(cleanJson(rawText || '{}'));
+    if(data.modules) {
+      data.modules = data.modules.map((m: any, i: number) => ({
+        ...m,
+        id: `m-${Date.now()}-${i}`,
+        isCompleted: false,
+        topic: topic
+      }));
     }
-  })) as GenerateContentResponse;
-  
-  const rawText = getResponseText(response);
-  const data = JSON.parse(cleanJson(rawText || '{}'));
-  if(data.modules) {
-    data.modules = data.modules.map((m: any, i: number) => ({
-      ...m,
-      id: `m-${Date.now()}-${i}`,
-      isCompleted: false,
-      topic: topic
-    }));
+    return data;
+  } catch (e) {
+    throw new Error(getErrorMessage(e));
   }
-  return data;
 };
 
 // --- Simulation ---

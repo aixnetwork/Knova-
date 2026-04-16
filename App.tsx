@@ -44,7 +44,9 @@ import {
     AlertTriangle,
     Maximize2,
     Minimize2,
-    HelpCircle
+    HelpCircle,
+    FileText,
+    PlayCircle
 } from 'lucide-react';
 
 import { Course, Module, AppView, QuizQuestion, UserStats, UserProfile, UserRole, SubscriptionTier, MicroLesson, CourseStatus, AssessmentResult } from './types';
@@ -96,6 +98,49 @@ function useDebounce<T>(value: T, delay: number): T {
 const isBackendCourseId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 // Exclude demo/mock courses from being loaded or persisted.
 const isMockOrDemoCourseId = (id: string) => !id || id.startsWith('mock-');
+
+const mapApiCourseToCourse = (c: {
+    id: string;
+    title?: string;
+    topic: string;
+    description: string;
+    status?: string;
+    modules?: { id: string; name: string; description?: string | null; keyConcepts: string[]; content?: string | null }[];
+    assets?: {
+        flyerUrl?: string | null;
+        podcastUrl?: string | null;
+        salesSlides?: { title: string; bullets: string[]; speakerNotes: string }[] | null;
+        infographic?: { title: string; content: string; iconSuggestion: string; colorTheme: string }[] | null;
+        youtubeResources?: { title: string; channelName: string; searchQuery: string; reason: string }[] | null;
+    } | null;
+}): Course => ({
+    id: c.id,
+    title: c.title ?? c.topic,
+    topic: c.topic,
+    description: c.description || '',
+    progress: 0,
+    createdAt: Date.now(),
+    modules: (c.modules || []).map((m) => ({
+        id: m.id,
+        title: m.name,
+        description: m.description ?? undefined,
+        keyConcepts: m.keyConcepts || [],
+        content: m.content ?? undefined,
+        isCompleted: false,
+    })),
+    status: c.status === 'PUBLISHED' ? CourseStatus.PUBLISHED : CourseStatus.DRAFT,
+    thumbnailUrl: c.assets?.flyerUrl ?? undefined,
+    savedAssets: c.assets ? {
+        flyerUrl: c.assets.flyerUrl ?? undefined,
+        podcastUrl: c.assets.podcastUrl ?? undefined,
+        marketingData: c.assets.salesSlides || c.assets.infographic || c.assets.youtubeResources ? {
+            slides: Array.isArray(c.assets.salesSlides) ? c.assets.salesSlides : [],
+            infographic: Array.isArray(c.assets.infographic) ? c.assets.infographic : [],
+            youtubeResources: Array.isArray(c.assets.youtubeResources) ? c.assets.youtubeResources : [],
+            generatedAt: Date.now(),
+        } : undefined,
+    } : undefined,
+});
 
 // --- Persistence Helpers with Quota Safety ---
 const safePersistCourse = (course: Course) => {
@@ -314,6 +359,7 @@ export const App: React.FC = () => {
     const [quizActive, setQuizActive] = useState(false);
     const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
     const [quizSubmitted, setQuizSubmitted] = useState(false);
+    const [showSavedAssetsModal, setShowSavedAssetsModal] = useState(false);
 
     const [activeMicroLesson, setActiveMicroLesson] = useState<MicroLesson | null>(null);
 
@@ -484,26 +530,31 @@ export const App: React.FC = () => {
         coursesApi.list()
             .then(({ data }) => {
                 if (!Array.isArray(data)) return;
-                const apiCourses: Course[] = data.map((c: { id: string; title?: string; topic: string; description: string; status?: string; modules?: { id: string; name: string; description?: string | null; keyConcepts: string[]; content?: string | null }[] }) => ({
-                    id: c.id,
-                    title: c.title ?? c.topic,
-                    topic: c.topic,
-                    description: c.description || '',
-                    progress: 0,
-                    createdAt: Date.now(),
-                    modules: (c.modules || []).map((m: { id: string; name: string; description?: string | null; keyConcepts: string[]; content?: string | null }) => ({
-                        id: m.id,
-                        title: m.name,
-                        description: m.description ?? undefined,
-                        keyConcepts: m.keyConcepts || [],
-                        content: m.content ?? undefined,
-                        isCompleted: false,
-                    })),
-                    status: c.status === 'PUBLISHED' ? CourseStatus.PUBLISHED : CourseStatus.DRAFT,
-                }));
+                const apiCourses: Course[] = data.map(mapApiCourseToCourse);
                 setCourses(prev => {
                     const map = new Map(prev.filter(c => !isMockOrDemoCourseId(c.id)).map(c => [c.id, c]));
-                    apiCourses.forEach(ac => { if (!map.has(ac.id)) map.set(ac.id, ac); });
+                    apiCourses.forEach(ac => {
+                        const existing = map.get(ac.id);
+                        if (!existing) {
+                            map.set(ac.id, ac);
+                            return;
+                        }
+
+                        map.set(ac.id, {
+                            ...existing,
+                            ...ac,
+                            progress: existing.progress ?? ac.progress,
+                            createdAt: existing.createdAt || ac.createdAt,
+                            modules: ac.modules.map((module) => {
+                                const prevModule = existing.modules?.find((m) => m.id === module.id);
+                                return {
+                                    ...module,
+                                    isCompleted: prevModule?.isCompleted ?? module.isCompleted,
+                                    imageUrl: prevModule?.imageUrl ?? module.imageUrl,
+                                };
+                            }),
+                        });
+                    });
                     return Array.from(map.values());
                 });
             })
@@ -609,7 +660,7 @@ export const App: React.FC = () => {
         }
     };
 
-    const addCourse = (course: Course) => {
+    const addCourse = async (course: Course): Promise<Course> => {
         if (!course.modules) course.modules = [];
         const tempId = course.id && course.id.startsWith('course-') ? course.id : `course-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
         const status = course.status || (user?.role === UserRole.ADMIN ? CourseStatus.PUBLISHED : CourseStatus.DRAFT);
@@ -630,35 +681,20 @@ export const App: React.FC = () => {
         if (status === CourseStatus.PUBLISHED) setJustPublishedCourse(courseWithTimestamp);
 
         // Always save to backend (database) for both draft and publish
-        coursesApi.create({
-            title: courseWithTimestamp.title || courseWithTimestamp.topic || 'Untitled',
-            topic: courseWithTimestamp.topic || courseWithTimestamp.title || 'Untitled',
-            description: courseWithTimestamp.description || '',
-            modules: (courseWithTimestamp.modules || []).map(m => ({
-                name: m.title,
-                description: m.description ?? undefined,
-                keyConcepts: m.keyConcepts || [],
-                content: m.content ?? undefined
-            })),
-            status: status === CourseStatus.PUBLISHED ? 'PUBLISHED' : 'DRAFT'
-        }).then(({ data }) => {
-            const apiCourse: Course = {
-                id: data.id,
-                title: (data as { title?: string }).title || data.topic,
-                topic: data.topic,
-                description: data.description || '',
-                progress: 0,
-                createdAt: Date.now(),
-                modules: (data.modules || []).map((m: { id: string; name: string; description?: string | null; keyConcepts: string[]; content?: string | null }) => ({
-                    id: m.id,
-                    title: m.name,
+        try {
+            const { data } = await coursesApi.create({
+                title: courseWithTimestamp.title || courseWithTimestamp.topic || 'Untitled',
+                topic: courseWithTimestamp.topic || courseWithTimestamp.title || 'Untitled',
+                description: courseWithTimestamp.description || '',
+                modules: (courseWithTimestamp.modules || []).map(m => ({
+                    name: m.title,
                     description: m.description ?? undefined,
                     keyConcepts: m.keyConcepts || [],
-                    content: m.content ?? undefined,
-                    isCompleted: false
+                    content: m.content ?? undefined
                 })),
-                status: (data as { status?: string }).status === 'PUBLISHED' ? CourseStatus.PUBLISHED : CourseStatus.DRAFT
-            };
+                status: status === CourseStatus.PUBLISHED ? 'PUBLISHED' : 'DRAFT'
+            });
+            const apiCourse: Course = mapApiCourseToCourse(data);
             setCourses(prev => {
                 const next = prev.filter(c => c.id !== tempId);
                 const map = new Map(next.map(c => [c.id, c]));
@@ -668,10 +704,13 @@ export const App: React.FC = () => {
                 return Array.from(map.values());
             });
             if (status === CourseStatus.PUBLISHED) setJustPublishedCourse(apiCourse);
-        }).catch(() => {
+            setCourseSearch('');
+            return apiCourse;
+        } catch {
             // Keep course in state and localStorage if API fails
-        });
-        setCourseSearch('');
+            setCourseSearch('');
+            return courseWithTimestamp;
+        }
     };
 
     const handleUpdateCourse = (courseId: string, updates: Partial<Course>) => {
@@ -692,10 +731,19 @@ export const App: React.FC = () => {
         }
     };
 
-    const handleEditCourse = (courseId: string) => {
+    const handleEditCourse = async (courseId: string) => {
         const course = courses.find(c => c.id === courseId);
         if (course) {
-            setCourseToEdit(course);
+            if (isBackendCourseId(courseId)) {
+                try {
+                    const { data } = await coursesApi.getById(courseId);
+                    setCourseToEdit(mapApiCourseToCourse(data));
+                } catch {
+                    setCourseToEdit(course);
+                }
+            } else {
+                setCourseToEdit(course);
+            }
             navigateToView(AppView.CREATOR_STUDIO);
         }
     };
@@ -733,11 +781,26 @@ export const App: React.FC = () => {
         }
     };
 
-    const handleSelectCourse = (courseId: string) => {
-        const course = courses.find(c => c.id === courseId);
+    const handleSelectCourse = async (courseId: string) => {
+        let course = courses.find(c => c.id === courseId);
         if (!course) return;
         setActiveCourseId(courseId);
         if (isBackendCourseId(courseId)) {
+            try {
+                const { data } = await coursesApi.getById(courseId);
+                const freshCourse = mapApiCourseToCourse(data);
+                course = freshCourse;
+                setCourses(prev => prev.map(c => c.id === courseId ? {
+                    ...freshCourse,
+                    progress: c.progress,
+                    modules: freshCourse.modules.map((m) => {
+                        const prevModule = c.modules.find(pm => pm.id === m.id);
+                        return { ...m, isCompleted: prevModule?.isCompleted ?? false };
+                    }),
+                } : c));
+            } catch {
+                // Fall back to the existing client state if the refresh fails.
+            }
             enrollmentsApi.enroll(courseId).catch(() => { });
             enrollmentsApi.getCompletedModules(courseId).then(({ data }) => {
                 const ids = new Set(data.moduleIds || []);
@@ -967,6 +1030,8 @@ export const App: React.FC = () => {
         }
 
         const activeModule = course.modules?.find(m => m.id === activeModuleId);
+        const savedAssets = course.savedAssets;
+        const hasSavedAssets = !!(savedAssets?.flyerUrl || savedAssets?.podcastUrl || savedAssets?.marketingData);
 
         // Sort modules by number in title (Module 1, Module 2, ...) so order is correct in the sidebar
         const getModuleOrder = (m: Module) => {
@@ -1200,6 +1265,14 @@ export const App: React.FC = () => {
                                                                 >
                                                                     {isPlayingAudio ? <Loader2 className="animate-spin" size={16} /> : <Mic size={16} />} {isPlayingAudio ? 'Playing...' : 'Listen'}
                                                                 </button>
+                                                                {hasSavedAssets && (
+                                                                    <button
+                                                                        onClick={() => setShowSavedAssetsModal(true)}
+                                                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors text-slate-500 hover:bg-slate-100 hover:text-indigo-600"
+                                                                    >
+                                                                        <Eye size={16} /> View Assets
+                                                                    </button>
+                                                                )}
                                                             </div>
                                                             {showCreateTools && (
                                                                 <div className="flex gap-2">
@@ -1210,6 +1283,11 @@ export const App: React.FC = () => {
                                                         </div>
 
                                                         <div className="animate-in fade-in duration-500">
+                                                            {!focusMode && savedAssets?.flyerUrl && (
+                                                                <div className="mb-8 rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 shadow-sm">
+                                                                    <img src={savedAssets.flyerUrl} alt={`${course.title} flyer`} className="w-full max-h-[420px] object-cover" referrerPolicy="no-referrer" />
+                                                                </div>
+                                                            )}
                                                             {renderMarkdown(moduleContent || '', focusMode)}
                                                         </div>
 
@@ -1316,6 +1394,7 @@ export const App: React.FC = () => {
                 if (showCreateTools) {
                     return <CreatorStudio
                         onPublishCourse={addCourse}
+                        onUpdateCourse={handleUpdateCourse}
                         courses={courses}
                         user={user}
                         onNavigateToDashboard={() => {
@@ -1464,10 +1543,16 @@ export const App: React.FC = () => {
         <div className="flex h-full w-full bg-slate-50 overflow-hidden text-slate-900 font-sans selection:bg-indigo-500 selection:text-white relative">
             {/* Storage Notification Toast */}
             {storageNotification && (
-                <div className="fixed top-4 right-4 z-[60] bg-white border-l-4 border-amber-500 p-4 rounded-lg shadow-2xl animate-in slide-in-from-right-10 flex items-center gap-3 max-w-sm">
-                    <AlertTriangle className="text-amber-500 shrink-0" />
-                    <p className="text-sm font-medium text-slate-700">{storageNotification}</p>
-                    <button onClick={() => setStorageNotification(null)} className="ml-auto text-slate-400 hover:text-slate-600"><X size={14} /></button>
+                <div className="fixed top-4 right-4 left-4 md:left-auto z-[80] bg-white border-l-4 border-amber-500 p-4 rounded-lg shadow-2xl animate-in slide-in-from-right-10 flex items-start gap-3 w-auto md:w-[min(40rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)]">
+                    <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-slate-700 break-words whitespace-pre-wrap leading-relaxed">
+                            {storageNotification}
+                        </p>
+                    </div>
+                    <button onClick={() => setStorageNotification(null)} className="shrink-0 text-slate-400 hover:text-slate-600">
+                        <X size={14} />
+                    </button>
                 </div>
             )}
 
@@ -1557,6 +1642,105 @@ export const App: React.FC = () => {
                 <div className="flex-1 overflow-y-auto bg-slate-50 relative">
                     {renderContent()}
                 </div>
+
+                {showSavedAssetsModal && activeCourseId && (() => {
+                    const currentCourse = courses.find(c => c.id === activeCourseId);
+                    const assets = currentCourse?.savedAssets;
+                    const marketingData = assets?.marketingData;
+                    if (!assets) return null;
+                    return (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setShowSavedAssetsModal(false)}>
+                            <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
+                                    <h2 className="text-lg font-bold text-slate-900">Saved course assets</h2>
+                                    <button onClick={() => setShowSavedAssetsModal(false)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-200/80 hover:text-slate-800 transition-colors" aria-label="Close">
+                                        <X size={20} />
+                                    </button>
+                                </div>
+                                <div className="overflow-y-auto p-6 space-y-8">
+                                    {assets.flyerUrl && (
+                                        <section className="space-y-3">
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                                <ImageIcon size={16} /> Marketing flyer
+                                            </h3>
+                                            <img src={assets.flyerUrl} alt="Saved flyer" className="w-full rounded-xl border border-slate-200 shadow-sm" referrerPolicy="no-referrer" />
+                                        </section>
+                                    )}
+                                    {assets.podcastUrl && (
+                                        <section className="space-y-3">
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                                <PlayCircle size={16} /> Promo podcast
+                                            </h3>
+                                            <audio src={assets.podcastUrl} controls className="w-full" />
+                                        </section>
+                                    )}
+                                    {marketingData?.slides?.length ? (
+                                        <section>
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                                <BookOpen size={16} /> Slide deck
+                                            </h3>
+                                            <div className="space-y-4">
+                                                {marketingData.slides.map((slide, idx) => (
+                                                    <div key={idx} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50">
+                                                        <p className="text-xs font-bold text-amber-600 mb-1">Slide {idx + 1}</p>
+                                                        <h4 className="font-bold text-slate-900 mb-2">{slide.title}</h4>
+                                                        <ul className="list-disc list-inside text-sm text-slate-600 space-y-1 mb-3">
+                                                            {slide.bullets.map((b, i) => <li key={i}>{b}</li>)}
+                                                        </ul>
+                                                        <p className="text-xs text-slate-500 border-t border-slate-200 pt-3">
+                                                            <span className="font-semibold text-slate-600">Speaker notes: </span>
+                                                            {slide.speakerNotes}
+                                                        </p>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    ) : null}
+                                    {marketingData?.infographic?.length ? (
+                                        <section>
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                                <Sparkles size={16} /> Infographics
+                                            </h3>
+                                            <div className="grid gap-4">
+                                                {marketingData.infographic.map((block, idx) => (
+                                                    <div key={idx} className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm">
+                                                        <div className="flex items-start justify-between gap-2 mb-2">
+                                                            <h4 className="font-bold text-slate-900">{block.title}</h4>
+                                                            <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
+                                                                {block.colorTheme}
+                                                            </span>
+                                                        </div>
+                                                        <p className="text-sm text-slate-600 mb-2">{block.content}</p>
+                                                        <p className="text-xs text-slate-400">
+                                                            <span className="font-medium text-slate-500">Icon idea: </span>
+                                                            {block.iconSuggestion}
+                                                        </p>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    ) : null}
+                                    {marketingData?.youtubeResources?.length ? (
+                                        <section>
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                                <FileText size={16} /> YouTube resources
+                                            </h3>
+                                            <div className="space-y-3">
+                                                {marketingData.youtubeResources.map((vid, idx) => (
+                                                    <div key={idx} className="p-4 rounded-xl border border-slate-200 bg-slate-50/80">
+                                                        <h4 className="font-bold text-slate-900">{vid.title}</h4>
+                                                        <p className="text-sm text-indigo-600">{vid.channelName}</p>
+                                                        <p className="text-xs text-slate-500 mt-1">{vid.reason}</p>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
 
                 {/* Feedback Button */}
                 <button

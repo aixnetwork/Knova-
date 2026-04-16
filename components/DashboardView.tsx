@@ -1,5 +1,5 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     Trophy,
     Database,
@@ -79,7 +79,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     // --- SCALE MONITORING ---
     const [syncStatus, setSyncStatus] = useState<SyncStatus>('IDLE');
     useEffect(() => {
-        syncEngine.subscribe(status => setSyncStatus(status));
+        const unsubscribe = syncEngine.subscribe(status => setSyncStatus(status));
+        return unsubscribe;
     }, []);
 
     // Load twin count from API for checklist
@@ -116,79 +117,116 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         isCompanyUser ||
         isSuperAdmin;
 
-    const safeCourses = (courses || []).filter(c => c && c.id);
-    const sortedCourses = [...safeCourses].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-
-    const visibleCourses = sortedCourses.filter(c => {
-        if (!c) return false;
-        if (isSuperAdmin || isCompanyUser) return true;
-        if (user?.name && c.authorName === user.name) return true;
-        if (hasCreatorAccess && c.status !== CourseStatus.REJECTED) return true;
-        if (c.isDefault) return true;
-        if (c.status === 'PUBLISHED') return true;
-        return false;
-    });
-
-    const myCreations = visibleCourses.filter(c =>
-        (c.id && c.id.startsWith('course-')) ||
-        (user?.name && c.authorName === user.name) ||
-        (hasCreatorAccess && c.status === 'DRAFT')
+    const safeCourses = useMemo(
+        () => (courses || []).filter(c => c && c.id),
+        [courses]
     );
 
-    const otherCourses = visibleCourses.filter(c => !myCreations.includes(c));
-    const continueCourse = visibleCourses.find(c => c.progress > 0 && c.progress < 100) || visibleCourses[0];
+    const sortedCourses = useMemo(
+        () => [...safeCourses].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
+        [safeCourses]
+    );
 
-    let displayCreations = [...myCreations];
-    let displayOthers = [...otherCourses];
+    const visibleCourses = useMemo(
+        () => sortedCourses.filter(c => {
+            if (!c) return false;
+            if (isSuperAdmin || isCompanyUser) return true;
+            if (user?.name && c.authorName === user.name) return true;
+            if (hasCreatorAccess && c.status !== CourseStatus.REJECTED) return true;
+            if (c.isDefault) return true;
+            if (c.status === 'PUBLISHED') return true;
+            return false;
+        }),
+        [sortedCourses, isSuperAdmin, isCompanyUser, user?.name, hasCreatorAccess]
+    );
 
-    if (courseSearch.trim()) {
-        const term = courseSearch.toLowerCase();
-        const matches = (c: Course) => (c.title || '').toLowerCase().includes(term);
-        displayCreations = displayCreations.filter(matches);
-        displayOthers = displayOthers.filter(matches);
-    }
+    const myCreations = useMemo(
+        () => visibleCourses.filter(c =>
+            (c.id && c.id.startsWith('course-')) ||
+            (user?.name && c.authorName === user.name) ||
+            (hasCreatorAccess && c.status === 'DRAFT')
+        ),
+        [visibleCourses, user?.name, hasCreatorAccess]
+    );
+
+    const otherCourses = useMemo(
+        () => visibleCourses.filter(c => !myCreations.includes(c)),
+        [visibleCourses, myCreations]
+    );
+
+    const continueCourse = useMemo(
+        () => visibleCourses.find(c => c.progress > 0 && c.progress < 100) || visibleCourses[0],
+        [visibleCourses]
+    );
+
+    const { displayCreations, displayOthers } = useMemo(() => {
+        let nextCreations = [...myCreations];
+        let nextOthers = [...otherCourses];
+
+        if (courseSearch.trim()) {
+            const term = courseSearch.toLowerCase();
+            const matches = (c: Course) => (c.title || '').toLowerCase().includes(term);
+            nextCreations = nextCreations.filter(matches);
+            nextOthers = nextOthers.filter(matches);
+        }
+
+        return {
+            displayCreations: nextCreations,
+            displayOthers: nextOthers
+        };
+    }, [myCreations, otherCourses, courseSearch]);
 
     const [dailyInsight, setDailyInsight] = useState<string | null>(null);
+    const insightUserName = user?.name?.trim() || '';
+    const continueCourseTopic = continueCourse?.topic?.trim() || '';
 
     useEffect(() => {
+        const today = new Date().toDateString();
+        const storedKey = `knovatwin_insight_${today}`;
+        const storedInsight = localStorage.getItem(storedKey);
+
+        if (storedInsight) {
+            setDailyInsight(storedInsight);
+            return;
+        }
+
+        if (!insightUserName || !continueCourseTopic) {
+            return;
+        }
+
+        if (!requireUserGeminiSessionOrToast()) {
+            setDailyInsight("Set your Gemini API key in Settings → Integrations to unlock AI insights.");
+            return;
+        }
+
         let cancelled = false;
+        const insightKey = `${today}:${insightUserName}:${continueCourseTopic}`;
+
         const loadInsight = async () => {
-            const today = new Date().toDateString();
-            const storedKey = `knovatwin_insight_${today}`;
-            const storedInsight = localStorage.getItem(storedKey);
-
-            if (storedInsight) {
-                if (!cancelled) setDailyInsight(storedInsight);
-            } else if (user && continueCourse && continueCourse.topic) {
-                if (!requireUserGeminiSessionOrToast()) {
-                    if (!cancelled) setDailyInsight("Set your Gemini API key in Settings → Integrations to unlock AI insights.");
-                    return;
+            try {
+                if (!dailyInsightInFlight.has(insightKey)) {
+                    dailyInsightInFlight.set(
+                        insightKey,
+                        generateDailyInsight(insightUserName, continueCourseTopic)
+                            .finally(() => dailyInsightInFlight.delete(insightKey))
+                    );
                 }
-                try {
-                    const insightKey = `${today}:${user.name}:${continueCourse.topic}`;
-                    if (!dailyInsightInFlight.has(insightKey)) {
-                        dailyInsightInFlight.set(
-                            insightKey,
-                            generateDailyInsight(user.name, continueCourse.topic)
-                                .finally(() => dailyInsightInFlight.delete(insightKey))
-                        );
-                    }
 
-                    const insight = await dailyInsightInFlight.get(insightKey)!;
-                    if (cancelled) return;
-                    setDailyInsight(insight);
-                    localStorage.setItem(storedKey, insight);
-                } catch (e: any) {
-                    if (!cancelled) setDailyInsight("Consistency is key. Keep learning!");
-                }
+                const insight = await dailyInsightInFlight.get(insightKey)!;
+                if (cancelled) return;
+                setDailyInsight(insight);
+                localStorage.setItem(storedKey, insight);
+            } catch (e: any) {
+                if (!cancelled) setDailyInsight("Consistency is key. Keep learning!");
             }
         };
+
         loadInsight();
 
         return () => {
             cancelled = true;
         };
-    }, [user, continueCourse]);
+    }, [insightUserName, continueCourseTopic]);
 
     const getGreeting = () => {
         const hour = new Date().getHours();

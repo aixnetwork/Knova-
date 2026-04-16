@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MessageSquare, Send, X, ChevronDown, Sparkles, Bot, Minimize2, RotateCcw } from 'lucide-react';
 import { UserProfile } from '../types';
 import { getOnboardingChat, isUserGeminiSessionReady, showKnovaToast } from '../services/geminiService';
@@ -49,8 +49,10 @@ export const OnboardingAssistant: React.FC<OnboardingAssistantProps> = ({ user }
     const [isTyping, setIsTyping] = useState(false);
     const [chatSession, setChatSession] = useState<any>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const userSessionKey = user.id || user.email || user.name;
+    const hasStartedRef = useRef(false);
 
-    const startChat = async (withDelay = false) => {
+    const startChat = useCallback(async (withDelay = false) => {
         if (!isUserGeminiSessionReady()) {
             showKnovaToast('Set your Gemini API key first: open Settings, then Integrations, and save your key.');
             setMessages([{ role: 'model', text: "Welcome to KnovaTwin! Please verify your API Key in Settings to enable the AI Guide." }]);
@@ -90,14 +92,22 @@ export const OnboardingAssistant: React.FC<OnboardingAssistantProps> = ({ user }
         } finally {
             setIsTyping(false);
         }
-    };
-
-    // Initialize Chat
-    useEffect(() => {
-        if (user) {
-            startChat(true);
-        }
     }, [user]);
+
+    // Only auto-start when the widget is opened, and only once per browser session for this user.
+    useEffect(() => {
+        if (!isOpen || !userSessionKey) return;
+
+        const startedKey = `knovatwin_onboarding_started_${userSessionKey}`;
+        if (hasStartedRef.current || sessionStorage.getItem(startedKey) === 'true') {
+            hasStartedRef.current = true;
+            return;
+        }
+
+        hasStartedRef.current = true;
+        sessionStorage.setItem(startedKey, 'true');
+        startChat(false);
+    }, [isOpen, userSessionKey, startChat]);
 
     // Auto-scroll
     useEffect(() => {
@@ -106,6 +116,7 @@ export const OnboardingAssistant: React.FC<OnboardingAssistantProps> = ({ user }
 
     const handleReset = (e: React.MouseEvent) => {
         e.stopPropagation();
+        hasStartedRef.current = true;
         startChat(false);
     };
 
