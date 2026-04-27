@@ -46,10 +46,12 @@ import {
     Minimize2,
     HelpCircle,
     FileText,
-    PlayCircle
+    PlayCircle,
+    Plus,
+    Trash2
 } from 'lucide-react';
 
-import { Course, Module, AppView, QuizQuestion, UserStats, UserProfile, UserRole, SubscriptionTier, MicroLesson, CourseStatus, AssessmentResult } from './types';
+import { Course, Module, AppView, QuizQuestion, UserStats, UserProfile, UserRole, SubscriptionTier, MicroLesson, CourseStatus, AssessmentResult, CourseResource, CourseResourceType } from './types';
 import { generateModuleContent, streamModuleContent, generateQuizForModule, generateConceptImage, generateSpeech, setSessionUserApiKey, clearSessionUserApiKey, resetClient, LEGACY_LOCAL_STORAGE_KEY, validateApiKey } from './services/geminiService';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { LiveTutor } from './components/LiveTutor';
@@ -99,6 +101,88 @@ const isBackendCourseId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 // Exclude demo/mock courses from being loaded or persisted.
 const isMockOrDemoCourseId = (id: string) => !id || id.startsWith('mock-');
 
+const normalizeCourseVideoResources = (items: unknown): CourseResource[] => {
+    if (!Array.isArray(items)) return [];
+    return items
+        .map((item, idx) => {
+            const row = item as Record<string, unknown>;
+            if (row.type === 'MARKETING') return null;
+            const sourceUrl = typeof row.sourceUrl === 'string' ? row.sourceUrl : '';
+            const type = typeof row.type === 'string' ? row.type : '';
+            const embedUrl = typeof row.embedUrl === 'string' ? row.embedUrl : undefined;
+            const videoId = typeof row.videoId === 'string' ? row.videoId : undefined;
+            if (!sourceUrl) return null;
+            return {
+                id: typeof row.id === 'string' ? row.id : `res-${idx}`,
+                title: typeof row.title === 'string' ? row.title : `Video ${idx + 1}`,
+                type: type === 'YOUTUBE' || type === 'PDF' || type === 'LINK' ? type : 'LINK',
+                sourceUrl,
+                embedUrl,
+                videoId,
+            };
+        })
+        .filter(Boolean) as CourseResource[];
+};
+
+const normalizeMarketingYoutubeResources = (items: unknown): { title: string; channelName: string; searchQuery: string; reason: string }[] => {
+    if (!Array.isArray(items)) return [];
+    return items
+        .map((item) => {
+            const row = item as Record<string, unknown>;
+            if (row.type === 'EMBED') return null;
+            const title = typeof row.title === 'string' ? row.title : '';
+            const channelName = typeof row.channelName === 'string' ? row.channelName : '';
+            const searchQuery = typeof row.searchQuery === 'string' ? row.searchQuery : '';
+            const reason = typeof row.reason === 'string' ? row.reason : '';
+            if (!title || !channelName || !searchQuery || !reason) return null;
+            return { title, channelName, searchQuery, reason };
+        })
+        .filter(Boolean) as { title: string; channelName: string; searchQuery: string; reason: string }[];
+};
+
+const getYoutubeVideoId = (rawUrl: string) => {
+    const input = (rawUrl || '').trim();
+    if (!input) return null;
+    try {
+        const parsed = new URL(input);
+        const host = parsed.hostname.toLowerCase();
+        if (host.includes('youtu.be')) {
+            const id = parsed.pathname.replace('/', '').trim();
+            return id || null;
+        }
+        if (host.includes('youtube.com')) {
+            const byQuery = parsed.searchParams.get('v');
+            if (byQuery) return byQuery;
+            const parts = parsed.pathname.split('/').filter(Boolean);
+            const embedIdx = parts.findIndex((p) => p === 'embed' || p === 'shorts');
+            if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1];
+        }
+        return null;
+    } catch {
+        return null;
+    }
+};
+
+const toEmbedYoutubeUrl = (videoId: string) => `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
+
+const isDirectVideoFileUrl = (url: string) => /\.(mp4|webm|ogg)(\?.*)?$/i.test((url || '').trim());
+
+const getVimeoVideoId = (rawUrl: string) => {
+    const input = (rawUrl || '').trim();
+    if (!input) return null;
+    try {
+        const parsed = new URL(input);
+        const host = parsed.hostname.toLowerCase();
+        if (!host.includes('vimeo.com')) return null;
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        if (!parts.length) return null;
+        const candidates = parts.filter((p) => /^\d+$/.test(p));
+        return candidates.length ? candidates[candidates.length - 1] : null;
+    } catch {
+        return null;
+    }
+};
+
 const mapApiCourseToCourse = (c: {
     id: string;
     title?: string;
@@ -111,7 +195,7 @@ const mapApiCourseToCourse = (c: {
         podcastUrl?: string | null;
         salesSlides?: { title: string; bullets: string[]; speakerNotes: string }[] | null;
         infographic?: { title: string; content: string; iconSuggestion: string; colorTheme: string }[] | null;
-        youtubeResources?: { title: string; channelName: string; searchQuery: string; reason: string }[] | null;
+        youtubeResources?: unknown[] | null;
     } | null;
 }): Course => ({
     id: c.id,
@@ -133,10 +217,11 @@ const mapApiCourseToCourse = (c: {
     savedAssets: c.assets ? {
         flyerUrl: c.assets.flyerUrl ?? undefined,
         podcastUrl: c.assets.podcastUrl ?? undefined,
+        videoResources: normalizeCourseVideoResources(c.assets.youtubeResources),
         marketingData: c.assets.salesSlides || c.assets.infographic || c.assets.youtubeResources ? {
             slides: Array.isArray(c.assets.salesSlides) ? c.assets.salesSlides : [],
             infographic: Array.isArray(c.assets.infographic) ? c.assets.infographic : [],
-            youtubeResources: Array.isArray(c.assets.youtubeResources) ? c.assets.youtubeResources : [],
+            youtubeResources: normalizeMarketingYoutubeResources(c.assets.youtubeResources),
             generatedAt: Date.now(),
         } : undefined,
     } : undefined,
@@ -328,7 +413,8 @@ export const App: React.FC = () => {
 
     const [activeCourseId, setActiveCourseId] = useState<string | null>(null);
     const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
-    const [courseViewTab, setCourseViewTab] = useState<'MODULES' | 'ASSESSMENT'>('MODULES');
+    const [courseViewTab, setCourseViewTab] = useState<'MODULES' | 'ASSESSMENT' | 'RESOURCES'>('MODULES');
+    const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
 
     const [justPublishedCourse, setJustPublishedCourse] = useState<Course | null>(null);
     const [courseToEdit, setCourseToEdit] = useState<Course | null>(null);
@@ -360,6 +446,11 @@ export const App: React.FC = () => {
     const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
     const [quizSubmitted, setQuizSubmitted] = useState(false);
     const [showSavedAssetsModal, setShowSavedAssetsModal] = useState(false);
+    const [showCourseResourcesModal, setShowCourseResourcesModal] = useState(false);
+    const [resourceInputType, setResourceInputType] = useState<CourseResourceType>('YOUTUBE');
+    const [resourceInputTitle, setResourceInputTitle] = useState('');
+    const [resourceInputUrl, setResourceInputUrl] = useState('');
+    const [isSavingResources, setIsSavingResources] = useState(false);
 
     const [activeMicroLesson, setActiveMicroLesson] = useState<MicroLesson | null>(null);
 
@@ -818,6 +909,7 @@ export const App: React.FC = () => {
         setQuizActive(false);
         navigateToView(AppView.COURSE_VIEW, firstModule ? { courseId, moduleId: firstModule.id } : { courseId });
         setCourseViewTab('MODULES');
+        setSelectedResourceId(null);
         setFocusMode(false);
         setIsEditing(false);
         setCourseToEdit(null);
@@ -983,6 +1075,127 @@ export const App: React.FC = () => {
         }
     };
 
+    const handleOpenCourseResourcesModal = () => {
+        setShowCourseResourcesModal(true);
+    };
+
+    const handleAddCourseResource = async () => {
+        if (!activeCourseId) return;
+        const course = courses.find((c) => c.id === activeCourseId);
+        if (!course) return;
+
+        const sourceUrl = resourceInputUrl.trim();
+        if (!sourceUrl) return;
+
+        let videoId: string | null = null;
+        let vimeoId: string | null = null;
+        let embedUrl: string | undefined;
+        if (resourceInputType === 'YOUTUBE') {
+            videoId = getYoutubeVideoId(sourceUrl);
+            if (!videoId) {
+                alert('Please enter a valid YouTube link.');
+                return;
+            }
+            embedUrl = toEmbedYoutubeUrl(videoId);
+        } else {
+            try {
+                const parsed = new URL(sourceUrl);
+                if (resourceInputType === 'PDF' && !parsed.pathname.toLowerCase().includes('.pdf')) {
+                    alert('Please provide a direct PDF link.');
+                    return;
+                }
+            } catch {
+                alert('Please enter a valid URL.');
+                return;
+            }
+            videoId = getYoutubeVideoId(sourceUrl);
+            if (videoId) {
+                embedUrl = toEmbedYoutubeUrl(videoId);
+            } else {
+                vimeoId = getVimeoVideoId(sourceUrl);
+                if (vimeoId) {
+                    embedUrl = `https://player.vimeo.com/video/${encodeURIComponent(vimeoId)}`;
+                }
+            }
+        }
+
+        const existing = course.savedAssets?.videoResources || [];
+        const label = resourceInputType === 'YOUTUBE' ? 'YouTube Video' : resourceInputType === 'PDF' ? 'PDF Resource' : 'External Link';
+        const newResource: CourseResource = {
+            id: `res-${Date.now()}`,
+            type: videoId ? 'YOUTUBE' : resourceInputType,
+            title: resourceInputTitle.trim() || `${label} ${existing.length + 1}`,
+            sourceUrl,
+            embedUrl,
+            videoId: videoId || undefined,
+        };
+        const nextResources = [newResource, ...existing];
+
+        handleUpdateCourse(activeCourseId, {
+            savedAssets: {
+                ...course.savedAssets,
+                videoResources: nextResources,
+            },
+        });
+
+        if (isBackendCourseId(activeCourseId)) {
+            setIsSavingResources(true);
+            try {
+                const marketingData = course.savedAssets?.marketingData;
+                const marketingYoutubeResources = (marketingData?.youtubeResources || []).map((item) => ({ ...item, type: 'MARKETING' as const }));
+                const embeddedYoutubeResources = nextResources.map((item) => ({ ...item, type: item.type }));
+                await coursesApi.saveAssets(activeCourseId, {
+                    flyerUrl: course.savedAssets?.flyerUrl || null,
+                    podcastUrl: course.savedAssets?.podcastUrl || null,
+                    slides: marketingData?.slides || [],
+                    infographic: marketingData?.infographic || [],
+                    youtubeResources: [...marketingYoutubeResources, ...embeddedYoutubeResources],
+                });
+            } catch (e) {
+                alert('Could not save resource right now. Please try again.');
+            } finally {
+                setIsSavingResources(false);
+            }
+        }
+
+        setResourceInputTitle('');
+        setResourceInputUrl('');
+        setResourceInputType('YOUTUBE');
+    };
+
+    const handleRemoveCourseResource = async (resourceId: string) => {
+        if (!activeCourseId) return;
+        const course = courses.find((c) => c.id === activeCourseId);
+        if (!course) return;
+        const existing = course.savedAssets?.videoResources || [];
+        const nextResources = existing.filter((r) => r.id !== resourceId);
+        handleUpdateCourse(activeCourseId, {
+            savedAssets: {
+                ...course.savedAssets,
+                videoResources: nextResources,
+            },
+        });
+        if (isBackendCourseId(activeCourseId)) {
+            setIsSavingResources(true);
+            try {
+                const marketingData = course.savedAssets?.marketingData;
+                const marketingYoutubeResources = (marketingData?.youtubeResources || []).map((item) => ({ ...item, type: 'MARKETING' as const }));
+                const embeddedYoutubeResources = nextResources.map((item) => ({ ...item, type: item.type }));
+                await coursesApi.saveAssets(activeCourseId, {
+                    flyerUrl: course.savedAssets?.flyerUrl || null,
+                    podcastUrl: course.savedAssets?.podcastUrl || null,
+                    slides: marketingData?.slides || [],
+                    infographic: marketingData?.infographic || [],
+                    youtubeResources: [...marketingYoutubeResources, ...embeddedYoutubeResources],
+                });
+            } catch (e) {
+                alert('Could not update resources right now. Please try again.');
+            } finally {
+                setIsSavingResources(false);
+            }
+        }
+    };
+
     const stopAudio = () => {
         if (currentAudioSource) {
             try { currentAudioSource.stop(); } catch (e) { }
@@ -1032,6 +1245,11 @@ export const App: React.FC = () => {
         const activeModule = course.modules?.find(m => m.id === activeModuleId);
         const savedAssets = course.savedAssets;
         const hasSavedAssets = !!(savedAssets?.flyerUrl || savedAssets?.podcastUrl || savedAssets?.marketingData);
+        const videoResources = savedAssets?.videoResources || [];
+        const selectedVideoResource =
+            videoResources.find((r) => r.id === selectedResourceId) ||
+            videoResources[0] ||
+            null;
 
         // Sort modules by number in title (Module 1, Module 2, ...) so order is correct in the sidebar
         const getModuleOrder = (m: Module) => {
@@ -1104,34 +1322,67 @@ export const App: React.FC = () => {
                             >
                                 Assessment
                             </button>
+                            <button
+                                onClick={() => setCourseViewTab('RESOURCES')}
+                                className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${courseViewTab === 'RESOURCES' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                            >
+                                Resources
+                            </button>
                         </div>
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                        {sortedModules.map((module, idx) => (
-                            <button
-                                key={module.id}
-                                onClick={() => handleSelectModuleNav(module.id, course.id)}
-                                className={`w-full text-left p-3 rounded-lg text-sm transition-all border ${activeModuleId === module.id
-                                        ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
-                                        : 'bg-white border-transparent hover:bg-slate-100 text-slate-600'
-                                    }`}
-                            >
-                                <div className="flex items-start gap-3">
-                                    <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border ${module.isCompleted
-                                            ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
-                                            : activeModuleId === module.id
-                                                ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
-                                                : 'bg-slate-100 text-slate-500 border-slate-200'
-                                        }`}>
-                                        {module.isCompleted ? <Check size={12} /> : idx + 1}
+                        {courseViewTab !== 'RESOURCES' ? (
+                            sortedModules.map((module, idx) => (
+                                <button
+                                    key={module.id}
+                                    onClick={() => handleSelectModuleNav(module.id, course.id)}
+                                    className={`w-full text-left p-3 rounded-lg text-sm transition-all border ${activeModuleId === module.id
+                                            ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
+                                            : 'bg-white border-transparent hover:bg-slate-100 text-slate-600'
+                                        }`}
+                                >
+                                    <div className="flex items-start gap-3">
+                                        <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold border ${module.isCompleted
+                                                ? 'bg-emerald-100 text-emerald-700 border-emerald-200'
+                                                : activeModuleId === module.id
+                                                    ? 'bg-indigo-100 text-indigo-700 border-indigo-200'
+                                                    : 'bg-slate-100 text-slate-500 border-slate-200'
+                                            }`}>
+                                            {module.isCompleted ? <Check size={12} /> : idx + 1}
+                                        </div>
+                                        <div className="flex-1">
+                                            <div className="font-semibold line-clamp-2">{module.title}</div>
+                                        </div>
                                     </div>
-                                    <div className="flex-1">
-                                        <div className="font-semibold line-clamp-2">{module.title}</div>
-                                    </div>
+                                </button>
+                            ))
+                        ) : (
+                            videoResources.length ? (
+                                videoResources.map((resource, idx) => (
+                                    <button
+                                        key={resource.id}
+                                        onClick={() => setSelectedResourceId(resource.id)}
+                                        className={`w-full text-left p-3 rounded-lg text-sm transition-all border ${selectedVideoResource?.id === resource.id
+                                                ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
+                                                : 'bg-white border-transparent hover:bg-slate-100 text-slate-600'
+                                            }`}
+                                    >
+                                        <div className="font-semibold line-clamp-2">{idx + 1}. {resource.title}</div>
+                                    </button>
+                                ))
+                            ) : (
+                                <div className="px-3 py-4 space-y-2">
+                                    <div className="text-xs text-slate-500">No resources added for this course yet.</div>
+                                    <button
+                                        onClick={handleOpenCourseResourcesModal}
+                                        className="w-full px-3 py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                                    >
+                                        Add Resources
+                                    </button>
                                 </div>
-                            </button>
-                        ))}
+                            )
+                        )}
                     </div>
                 </div>
 
@@ -1147,6 +1398,79 @@ export const App: React.FC = () => {
 
                     {courseViewTab === 'ASSESSMENT' ? (
                         <SkillsAssessment course={course} onComplete={handleAssessmentComplete} />
+                    ) : courseViewTab === 'RESOURCES' ? (
+                        <div className="max-w-6xl mx-auto p-6 md:p-10">
+                            {selectedVideoResource ? (
+                                <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-4">
+                                        <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-3">Course Resources</h3>
+                                        <div className="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
+                                            {videoResources.map((resource, idx) => (
+                                                <button
+                                                    key={resource.id}
+                                                    onClick={() => setSelectedResourceId(resource.id)}
+                                                    className={`w-full text-left p-3 rounded-xl border text-sm transition-colors ${selectedVideoResource.id === resource.id
+                                                            ? 'bg-indigo-50 border-indigo-200 text-indigo-900'
+                                                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                                        }`}
+                                                >
+                                                    <div className="font-semibold line-clamp-2">{idx + 1}. {resource.title}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div className="bg-white border border-slate-200 rounded-2xl p-4 md:p-6">
+                                        <h2 className="text-xl font-bold text-slate-900 mb-4">{selectedVideoResource.title}</h2>
+                                        {(selectedVideoResource.type === 'YOUTUBE' && selectedVideoResource.embedUrl) || (selectedVideoResource.embedUrl && selectedVideoResource.type !== 'PDF') ? (
+                                            <div className="w-full aspect-video rounded-xl overflow-hidden border border-slate-200 bg-black">
+                                                <iframe
+                                                    src={selectedVideoResource.embedUrl}
+                                                    title={selectedVideoResource.title}
+                                                    className="w-full h-full"
+                                                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                                                    allowFullScreen
+                                                    loading="lazy"
+                                                    referrerPolicy="strict-origin-when-cross-origin"
+                                                />
+                                            </div>
+                                        ) : isDirectVideoFileUrl(selectedVideoResource.sourceUrl) ? (
+                                            <div className="w-full rounded-xl overflow-hidden border border-slate-200 bg-black">
+                                                <video
+                                                    controls
+                                                    preload="metadata"
+                                                    className="w-full max-h-[70vh]"
+                                                    src={selectedVideoResource.sourceUrl}
+                                                />
+                                            </div>
+                                        ) : (
+                                            <div className="w-full rounded-xl border border-slate-200 bg-slate-50 p-6 text-slate-600 text-sm">
+                                                {selectedVideoResource.type === 'PDF'
+                                                    ? 'This is a PDF resource. Open it in a new tab.'
+                                                    : 'This link cannot be embedded by this site. Open it in a new tab.'}
+                                            </div>
+                                        )}
+                                        <a
+                                            href={selectedVideoResource.sourceUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex mt-4 text-sm font-semibold text-indigo-600 hover:text-indigo-700"
+                                        >
+                                            {selectedVideoResource.type === 'YOUTUBE' ? 'Open on YouTube' : selectedVideoResource.type === 'PDF' ? 'Open PDF' : 'Open link'}
+                                        </a>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="h-[60vh] flex flex-col items-center justify-center text-slate-500 gap-4">
+                                    <p>No resources added for this course yet.</p>
+                                    <button
+                                        onClick={handleOpenCourseResourcesModal}
+                                        className="px-4 py-2 text-sm font-bold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors"
+                                    >
+                                        Add Resources
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                     ) : (
                         activeModule ? (
                             <div className={`max-w-4xl mx-auto p-6 md:p-12 pb-32 transition-all duration-500 ${focusMode ? 'max-w-5xl' : ''}`}>
@@ -1736,6 +2060,106 @@ export const App: React.FC = () => {
                                             </div>
                                         </section>
                                     ) : null}
+                                    {assets.videoResources?.length ? (
+                                        <section>
+                                            <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                                <PlayCircle size={16} /> Embedded resources
+                                            </h3>
+                                            <div className="space-y-3">
+                                                {assets.videoResources.map((video) => (
+                                                    <a
+                                                        key={video.id}
+                                                        href={video.sourceUrl}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="block p-4 rounded-xl border border-slate-200 bg-slate-50/80 hover:bg-slate-100 transition-colors"
+                                                    >
+                                                        <h4 className="font-bold text-slate-900">{video.title}</h4>
+                                                        <p className="text-xs text-indigo-600 mt-1">{video.sourceUrl}</p>
+                                                    </a>
+                                                ))}
+                                            </div>
+                                        </section>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                {showCourseResourcesModal && activeCourseId && (() => {
+                    const course = courses.find((c) => c.id === activeCourseId);
+                    if (!course) return null;
+                    const resources = course.savedAssets?.videoResources || [];
+                    return (
+                        <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm" onClick={() => setShowCourseResourcesModal(false)}>
+                            <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
+                                    <h2 className="text-lg font-bold text-slate-900">Add course resources</h2>
+                                    <button onClick={() => setShowCourseResourcesModal(false)} className="p-2 rounded-lg text-slate-500 hover:bg-slate-200/80 hover:text-slate-800 transition-colors" aria-label="Close">
+                                        <X size={20} />
+                                    </button>
+                                </div>
+                                <div className="p-6 border-b border-slate-100 space-y-3">
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                        <select
+                                            value={resourceInputType}
+                                            onChange={(e) => setResourceInputType(e.target.value as CourseResourceType)}
+                                            className="px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                        >
+                                            <option value="YOUTUBE">YouTube</option>
+                                            <option value="PDF">PDF</option>
+                                            <option value="LINK">Any Link</option>
+                                        </select>
+                                        <input
+                                            type="text"
+                                            value={resourceInputTitle}
+                                            onChange={(e) => setResourceInputTitle(e.target.value)}
+                                            placeholder="Title (optional)"
+                                            className="px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500 md:col-span-2"
+                                        />
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="url"
+                                            value={resourceInputUrl}
+                                            onChange={(e) => setResourceInputUrl(e.target.value)}
+                                            placeholder={resourceInputType === 'YOUTUBE' ? 'https://youtube.com/watch?v=...' : resourceInputType === 'PDF' ? 'https://example.com/file.pdf' : 'https://example.com'}
+                                            className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                        />
+                                        <button
+                                            onClick={handleAddCourseResource}
+                                            disabled={!resourceInputUrl.trim() || isSavingResources}
+                                            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60 flex items-center gap-2"
+                                        >
+                                            {isSavingResources ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                                            Add
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="overflow-y-auto p-6 space-y-3">
+                                    {resources.length ? resources.map((resource, idx) => (
+                                        <div key={resource.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                                            <div className="min-w-0">
+                                                <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">{resource.type}</p>
+                                                <p className="text-sm font-semibold text-slate-900 line-clamp-1">{idx + 1}. {resource.title}</p>
+                                                <a href={resource.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-700 line-clamp-1">
+                                                    {resource.sourceUrl}
+                                                </a>
+                                            </div>
+                                            <button
+                                                onClick={() => handleRemoveCourseResource(resource.id)}
+                                                className="text-slate-400 hover:text-red-600 shrink-0"
+                                                aria-label="Remove resource"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
+                                    )) : (
+                                        <div className="text-sm text-slate-500 text-center py-10">
+                                            No resources added yet.
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>

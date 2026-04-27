@@ -6,10 +6,22 @@ export interface MarketingAssets {
     generatedAt: number;
 }
 
+export type CourseResourceType = 'YOUTUBE' | 'PDF' | 'LINK';
+
+export interface CourseResource {
+  id: string;
+  title: string;
+  type: CourseResourceType;
+  sourceUrl: string;
+  embedUrl?: string;
+  videoId?: string;
+}
+
 export interface SavedCourseAssets {
   flyerUrl?: string;
   podcastUrl?: string;
   marketingData?: MarketingAssets;
+  videoResources?: CourseResource[];
 }
 
 export enum UserRole {

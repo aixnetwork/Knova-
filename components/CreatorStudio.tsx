@@ -6,7 +6,7 @@ import {
     Bot, Code, Globe, Brain, Save, Cloud, FileUp, Link as LinkIcon, HardDrive, Plus, Trash2, MessageSquare, Send, PlayCircle, Settings,
     Radio, Volume2, VolumeX
 } from 'lucide-react';
-import { Course, CourseStatus, Module, UserProfile, MarketingAssets, MicroLesson, ExpertPersona, ChatMessage } from '../types';
+import { Course, CourseStatus, Module, UserProfile, MarketingAssets, MicroLesson, ExpertPersona, ChatMessage, CourseResource, CourseResourceType } from '../types';
 import { generateNextInterviewQuestion, generateCourseSyllabus, generateCourseMarketingAssets, generateCoursePodcast, generateMicroLesson, generateMarketingFlyer, generatePersonaAvatar, generateSpeech, getClient, getErrorMessage, isUserGeminiSessionReady, requireUserGeminiSessionOrToast, showKnovaToast } from '../services/geminiService';
 import { coursesApi, expertPersonasApi } from '../services/api';
 import { LiveTutor } from './LiveTutor';
@@ -58,6 +58,11 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
     const [isGeneratingFlyer, setIsGeneratingFlyer] = useState(false);
     const [showMarketingModal, setShowMarketingModal] = useState(false);
     const [isSavingAssets, setIsSavingAssets] = useState(false);
+    const [videoResources, setVideoResources] = useState<CourseResource[]>(courseToEdit?.savedAssets?.videoResources || []);
+    const [showResourcesModal, setShowResourcesModal] = useState(false);
+    const [resourceInputType, setResourceInputType] = useState<CourseResourceType>('YOUTUBE');
+    const [resourceInputTitle, setResourceInputTitle] = useState('');
+    const [resourceInputUrl, setResourceInputUrl] = useState('');
 
     const [microLesson, setMicroLesson] = useState<MicroLesson | null>(null);
 
@@ -111,15 +116,42 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
         setMarketingData(courseToEdit.savedAssets?.marketingData || null);
         setPodcastUrl(courseToEdit.savedAssets?.podcastUrl || null);
         setFlyerUrl(courseToEdit.savedAssets?.flyerUrl || null);
-        if (courseToEdit.savedAssets?.marketingData || courseToEdit.savedAssets?.flyerUrl || courseToEdit.savedAssets?.podcastUrl) {
+        setVideoResources(courseToEdit.savedAssets?.videoResources || []);
+        if (courseToEdit.savedAssets?.marketingData || courseToEdit.savedAssets?.flyerUrl || courseToEdit.savedAssets?.podcastUrl || (courseToEdit.savedAssets?.videoResources?.length || 0) > 0) {
             setWizardMode('MARKETING');
         }
     }, [courseToEdit]);
+
+    const getYoutubeVideoId = (rawUrl: string) => {
+        const input = (rawUrl || '').trim();
+        if (!input) return null;
+        try {
+            const parsed = new URL(input);
+            const host = parsed.hostname.toLowerCase();
+            if (host.includes('youtu.be')) {
+                const id = parsed.pathname.replace('/', '').trim();
+                return id || null;
+            }
+            if (host.includes('youtube.com')) {
+                const byQuery = parsed.searchParams.get('v');
+                if (byQuery) return byQuery;
+                const parts = parsed.pathname.split('/').filter(Boolean);
+                const embedIdx = parts.findIndex((p) => p === 'embed' || p === 'shorts');
+                if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1];
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    };
+
+    const toEmbedYoutubeUrl = (videoId: string) => `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
 
     const saveAssetsToDatabase = async (overrides?: {
         flyerUrl?: string | null;
         podcastUrl?: string | null;
         marketingData?: MarketingAssets | null;
+        videoResources?: CourseResource[];
     }) => {
         const courseId = currentCourseId || courseToEdit?.id;
         if (!courseId || !isBackendCourseId(courseId)) {
@@ -130,6 +162,9 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
         const nextFlyerUrl = overrides?.flyerUrl !== undefined ? overrides.flyerUrl : flyerUrl;
         const nextPodcastUrl = overrides?.podcastUrl !== undefined ? overrides.podcastUrl : podcastUrl;
         const nextMarketingData = overrides?.marketingData !== undefined ? overrides.marketingData : marketingData;
+        const nextVideoResources = overrides?.videoResources !== undefined ? overrides.videoResources : videoResources;
+        const marketingYoutubeResources = (nextMarketingData?.youtubeResources || []).map((item) => ({ ...item, type: 'MARKETING' as const }));
+        const embeddedYoutubeResources = (nextVideoResources || []).map((item) => ({ ...item, type: 'EMBED' as const }));
 
         setIsSavingAssets(true);
         try {
@@ -138,7 +173,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                 podcastUrl: nextPodcastUrl || null,
                 slides: nextMarketingData?.slides || [],
                 infographic: nextMarketingData?.infographic || [],
-                youtubeResources: nextMarketingData?.youtubeResources || [],
+                youtubeResources: [...marketingYoutubeResources, ...embeddedYoutubeResources],
             });
 
             const savedMarketingData = nextMarketingData ? {
@@ -152,12 +187,13 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                     flyerUrl: nextFlyerUrl || undefined,
                     podcastUrl: nextPodcastUrl || undefined,
                     marketingData: savedMarketingData,
+                    videoResources: nextVideoResources || [],
                 },
             });
 
             if (data?.assets?.flyerUrl) setFlyerUrl(data.assets.flyerUrl);
             if (data?.assets?.podcastUrl) setPodcastUrl(data.assets.podcastUrl);
-            showKnovaToast('Assets saved to database.');
+            showKnovaToast('Your assets are saved.');
             return data;
         } catch (e: any) {
             showKnovaToast(e?.message || 'Could not save assets right now.');
@@ -186,6 +222,7 @@ export const CreatorStudio: React.FC<CreatorStudioProps> = ({
                 flyerUrl: uploadedFlyerUrl,
                 podcastUrl: podcastUrl || undefined,
                 marketingData: marketingData || undefined,
+                videoResources: videoResources || [],
             },
         });
 
@@ -620,6 +657,53 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
         setWizardMode('MARKETING');
     };
 
+    const handleAddVideoResource = async () => {
+        const sourceUrl = resourceInputUrl.trim();
+        if (!sourceUrl) return;
+        let videoId: string | null = null;
+        let embedUrl: string | undefined;
+        if (resourceInputType === 'YOUTUBE') {
+            videoId = getYoutubeVideoId(sourceUrl);
+            if (!videoId) {
+                showKnovaToast('Please enter a valid YouTube link.');
+                return;
+            }
+            embedUrl = toEmbedYoutubeUrl(videoId);
+        } else {
+            try {
+                const parsed = new URL(sourceUrl);
+                if (resourceInputType === 'PDF' && !parsed.pathname.toLowerCase().includes('.pdf')) {
+                    showKnovaToast('Please provide a direct PDF link.');
+                    return;
+                }
+            } catch {
+                showKnovaToast('Please enter a valid URL.');
+                return;
+            }
+        }
+        const label = resourceInputType === 'YOUTUBE' ? 'YouTube Video' : resourceInputType === 'PDF' ? 'PDF Resource' : 'External Link';
+        const resource: CourseResource = {
+            id: `res-${Date.now()}`,
+            title: resourceInputTitle.trim() || `${label} ${videoResources.length + 1}`,
+            type: resourceInputType,
+            sourceUrl,
+            videoId: videoId || undefined,
+            embedUrl,
+        };
+        const nextResources = [resource, ...videoResources];
+        setVideoResources(nextResources);
+        setResourceInputTitle('');
+        setResourceInputUrl('');
+        setResourceInputType('YOUTUBE');
+        await saveAssetsToDatabase({ videoResources: nextResources });
+    };
+
+    const handleRemoveVideoResource = async (id: string) => {
+        const nextResources = videoResources.filter((item) => item.id !== id);
+        setVideoResources(nextResources);
+        await saveAssetsToDatabase({ videoResources: nextResources });
+    };
+
     return (
         <div className="p-4 md:p-8 max-w-5xl mx-auto min-h-full">
             <div className="flex justify-between items-center mb-8">
@@ -1023,7 +1107,7 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                         <h2 className="text-3xl font-bold text-slate-900 mb-2">Course Published!</h2>
                         <p className="text-slate-500 mb-8">Your course "{title}" is now live. Let's generate some marketing assets to help you promote it.</p>
 
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
                             <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100">
                                 <div className="w-12 h-12 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center mx-auto mb-4">
                                     <MonitorPlay size={24} />
@@ -1118,6 +1202,21 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                     {isGeneratingMarketing ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
                                     {marketingData ? 'View Assets' : 'View Assets'}
                                 </button>
+                            </div>
+
+                            <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100 text-left">
+                                <div className="w-12 h-12 bg-red-100 text-red-600 rounded-xl flex items-center justify-center mx-auto mb-4">
+                                    <PlayCircle size={24} />
+                                </div>
+                                <h3 className="font-bold mb-2 text-center">Add Resources</h3>
+                                <p className="text-xs text-slate-500 mb-4 text-center">Add YouTube, PDF, or any web link.</p>
+                                <button
+                                    onClick={() => setShowResourcesModal(true)}
+                                    className="w-full py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold hover:bg-slate-100 transition-colors flex items-center justify-center gap-2"
+                                >
+                                    <Plus size={16} /> Manage Resources
+                                </button>
+                                <p className="text-xs text-slate-500 mt-3 text-center">{videoResources.length} resource(s) added</p>
                             </div>
                         </div>
 
@@ -1354,6 +1453,94 @@ CONSTRAINTS: Keep answers concise. Use bullet points for clarity. Stay aligned t
                                 </pre>
                             </div>
                         )}
+                    </div>
+                </div>
+            )}
+
+            {showResourcesModal && (
+                <div
+                    className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="resources-modal-title"
+                    onClick={() => setShowResourcesModal(false)}
+                >
+                    <div
+                        className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
+                            <h2 id="resources-modal-title" className="text-lg font-bold text-slate-900">Course resources</h2>
+                            <button
+                                type="button"
+                                onClick={() => setShowResourcesModal(false)}
+                                className="p-2 rounded-lg text-slate-500 hover:bg-slate-200/80 hover:text-slate-800 transition-colors"
+                                aria-label="Close"
+                            >
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-6 border-b border-slate-100 space-y-3">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <select
+                                    value={resourceInputType}
+                                    onChange={(e) => setResourceInputType(e.target.value as CourseResourceType)}
+                                    className="px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                                    <option value="YOUTUBE">YouTube</option>
+                                    <option value="PDF">PDF</option>
+                                    <option value="LINK">Any Link</option>
+                                </select>
+                                <input
+                                    type="text"
+                                    value={resourceInputTitle}
+                                    onChange={(e) => setResourceInputTitle(e.target.value)}
+                                    placeholder="Title (optional)"
+                                    className="px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500 md:col-span-2"
+                                />
+                            </div>
+                            <div className="flex gap-2">
+                                <input
+                                    type="url"
+                                    value={resourceInputUrl}
+                                    onChange={(e) => setResourceInputUrl(e.target.value)}
+                                    placeholder={resourceInputType === 'YOUTUBE' ? 'https://youtube.com/watch?v=...' : resourceInputType === 'PDF' ? 'https://example.com/file.pdf' : 'https://example.com'}
+                                    className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                                <button
+                                    onClick={handleAddVideoResource}
+                                    disabled={!resourceInputUrl.trim() || isSavingAssets}
+                                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 disabled:opacity-60 flex items-center gap-2"
+                                >
+                                    {isSavingAssets ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                                    Add
+                                </button>
+                            </div>
+                        </div>
+                        <div className="overflow-y-auto p-6 space-y-3">
+                            {videoResources.length ? videoResources.map((resource, idx) => (
+                                <div key={resource.id} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                                    <div className="min-w-0">
+                                        <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">{resource.type}</p>
+                                        <p className="text-sm font-semibold text-slate-900 line-clamp-1">{idx + 1}. {resource.title}</p>
+                                        <a href={resource.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:text-indigo-700 line-clamp-1">
+                                            {resource.sourceUrl}
+                                        </a>
+                                    </div>
+                                    <button
+                                        onClick={() => handleRemoveVideoResource(resource.id)}
+                                        className="text-slate-400 hover:text-red-600 shrink-0"
+                                        aria-label="Remove resource"
+                                    >
+                                        <Trash2 size={16} />
+                                    </button>
+                                </div>
+                            )) : (
+                                <div className="text-sm text-slate-500 text-center py-10">
+                                    No resources added yet.
+                                </div>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}

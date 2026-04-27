@@ -219,7 +219,7 @@ export type CourseAssetsRes = {
   podcastUrl?: string | null;
   salesSlides?: MarketingAssets['slides'] | null;
   infographic?: MarketingAssets['infographic'] | null;
-  youtubeResources?: MarketingAssets['youtubeResources'] | null;
+  youtubeResources?: unknown[] | null;
 };
 
 export type CourseRes = {
@@ -251,7 +251,7 @@ export const coursesApi = {
       podcastUrl?: string | null;
       slides?: MarketingAssets['slides'];
       infographic?: MarketingAssets['infographic'];
-      youtubeResources?: MarketingAssets['youtubeResources'];
+      youtubeResources?: unknown[];
     }
   ) => request<CourseRes>(`/courses/${id}/assets`, { method: 'PUT', body: JSON.stringify(payload) }),
   uploadFlyer: (id: string, payload: { imageData: string }) =>
